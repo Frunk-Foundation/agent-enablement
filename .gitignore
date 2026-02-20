@@ -3,3 +3,27 @@ __pycache__/
 *.pyc
 cdk.out/
 .pytest_cache/
+enablement_pack/dist/
+enablement_pack/__pycache__/
+.DS_Store
+
+# macOS / JSII cache
+Library/
+
+# Local env files
+.env
+.env.enabler
+
+# Local scratch (may contain credentials)
+creds_test.json
+*_get_your_credentials.sh
+latest-enablement-bundle.zip
+latest-enablement-bundle/
+taskboard/
+.enabler/
+
+# Local notes
+codex_chats
+
+AGENTS.md
+.tmuxinator.yml

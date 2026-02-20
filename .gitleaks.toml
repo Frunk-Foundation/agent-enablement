@@ -1,0 +1,21 @@
+title = "agent_enablement gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore local/scratch artifacts that may contain ephemeral test credentials"
+paths = [
+  '''^\.venv/''',
+  '''^\.pytest_cache/''',
+  '''^__pycache__/''',
+  '''^cdk\.out/''',
+  '''^Library/''',
+  '''^latest-enablement-bundle/''',
+  '''^latest-enablement-bundle\.zip$''',
+  '''^taskboard/''',
+  '''^\.enabler/''',
+  '''^\.env$''',
+  '''^\.env\.enabler$''',
+  '''^creds_test\.json$''',
+]
