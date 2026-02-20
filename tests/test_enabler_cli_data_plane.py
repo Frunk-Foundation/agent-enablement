@@ -11,6 +11,7 @@ from enabler_cli.cli import (
     _resolve_runtime_credentials_doc,
     _taskboard_endpoint_for_args,
     cmd_agent_bundle,
+    cmd_agent_credential_process,
     cmd_agent_credentials,
     cmd_files_share,
     cmd_messages_ack,
@@ -824,6 +825,112 @@ def test_cmd_agent_credentials_writes_cognito_env_file(monkeypatch, tmp_path, ca
     assert "COGNITO_ID_TOKEN=id.token.value" in text
     assert (cognito_env_path.stat().st_mode & 0o777) == 0o600
     assert f"- cognito.env: {cognito_env_path}" in out
+
+
+def test_cmd_agent_credential_process_outputs_enablement_set_json(monkeypatch, capsys):
+    payload = {
+        "requestId": "req-cp-1",
+        "credentialSets": {
+            "agentEnablement": {
+                "credentials": {
+                    "accessKeyId": "AKIA_ENABLE",
+                    "secretAccessKey": "secret-enable",
+                    "sessionToken": "token-enable",
+                    "expiration": "2026-02-20T00:00:00Z",
+                }
+            },
+            "agentAWSWorkshopProvisioning": {
+                "credentials": {
+                    "accessKeyId": "AKIA_WORKSHOP",
+                    "secretAccessKey": "secret-workshop",
+                    "sessionToken": "token-workshop",
+                    "expiration": "2026-02-20T00:00:00Z",
+                }
+            },
+        },
+    }
+
+    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
+        return 200, {}, json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    args = argparse.Namespace(
+        set="agentEnablement",
+        username="agent-test",
+        password="pw",
+        endpoint="https://example.invalid/v1/credentials",
+        api_key="k",
+    )
+
+    assert cmd_agent_credential_process(args, _g()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "Version": 1,
+        "AccessKeyId": "AKIA_ENABLE",
+        "SecretAccessKey": "secret-enable",
+        "SessionToken": "token-enable",
+        "Expiration": "2026-02-20T00:00:00Z",
+    }
+
+
+def test_cmd_agent_credential_process_missing_requested_set_errors(monkeypatch):
+    payload = {
+        "requestId": "req-cp-2",
+        "credentialSets": {
+            "agentEnablement": {
+                "credentials": {
+                    "accessKeyId": "AKIA_ENABLE",
+                    "secretAccessKey": "secret-enable",
+                    "sessionToken": "token-enable",
+                }
+            }
+        },
+    }
+
+    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
+        return 200, {}, json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    args = argparse.Namespace(
+        set="agentAWSWorkshopProvisioning",
+        username="agent-test",
+        password="pw",
+        endpoint="https://example.invalid/v1/credentials",
+        api_key="k",
+    )
+
+    with pytest.raises(UsageError, match="missing credential set: agentAWSWorkshopProvisioning"):
+        cmd_agent_credential_process(args, _g())
+
+
+def test_cmd_agent_credential_process_missing_required_keys_errors(monkeypatch):
+    payload = {
+        "requestId": "req-cp-3",
+        "credentialSets": {
+            "agentEnablement": {
+                "credentials": {
+                    "accessKeyId": "AKIA_ENABLE",
+                    "secretAccessKey": "",
+                    "sessionToken": "token-enable",
+                }
+            }
+        },
+    }
+
+    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
+        return 200, {}, json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    args = argparse.Namespace(
+        set="agentEnablement",
+        username="agent-test",
+        password="pw",
+        endpoint="https://example.invalid/v1/credentials",
+        api_key="k",
+    )
+
+    with pytest.raises(UsageError, match="missing accessKeyId/secretAccessKey/sessionToken"):
+        cmd_agent_credential_process(args, _g())
 
 
 def test_cmd_messages_send_requires_credentials_when_cache_missing_and_refresh_disabled(tmp_path):

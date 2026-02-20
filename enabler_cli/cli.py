@@ -519,6 +519,47 @@ def _credentials_freshness(expires_at: str) -> tuple[str, int | None]:
     return "fresh", seconds
 
 
+def _credential_set_doc(*, root_doc: dict[str, Any], set_name: str) -> dict[str, Any]:
+    selected = str(set_name or "").strip()
+    if not selected:
+        raise UsageError("missing credential set name")
+
+    sets = root_doc.get("credentialSets")
+    if isinstance(sets, dict):
+        entry = sets.get(selected)
+        if isinstance(entry, dict):
+            return entry
+        raise UsageError(f"missing credential set: {selected}")
+
+    if selected == "agentEnablement":
+        creds = root_doc.get("credentials")
+        if isinstance(creds, dict):
+            return root_doc
+
+    raise UsageError(f"missing credential set: {selected}")
+
+
+def _credential_process_doc_to_output(doc: dict[str, Any]) -> dict[str, Any]:
+    creds = doc.get("credentials")
+    if not isinstance(creds, dict):
+        raise UsageError("invalid credential set: missing credentials object")
+    access_key_id = str(creds.get("accessKeyId") or "").strip()
+    secret_access_key = str(creds.get("secretAccessKey") or "").strip()
+    session_token = str(creds.get("sessionToken") or "").strip()
+    if not access_key_id or not secret_access_key or not session_token:
+        raise UsageError("invalid credential set: missing accessKeyId/secretAccessKey/sessionToken")
+    out: dict[str, Any] = {
+        "Version": 1,
+        "AccessKeyId": access_key_id,
+        "SecretAccessKey": secret_access_key,
+        "SessionToken": session_token,
+    }
+    expiration = str(creds.get("expiration") or doc.get("expiresAt") or "").strip()
+    if expiration:
+        out["Expiration"] = expiration
+    return out
+
+
 def _credentials_location_manifest(
     *,
     g: GlobalOpts,
@@ -1384,6 +1425,51 @@ def cmd_agent_credentials(args: argparse.Namespace, g: GlobalOpts) -> int:
         _print_json(parsed_json, pretty=g.pretty)
         return 0
     sys.stdout.write(body_text.rstrip("\n") + "\n")
+    return 0
+
+
+def cmd_agent_credential_process(args: argparse.Namespace, g: GlobalOpts) -> int:
+    try:
+        basic = auth_inputs.resolve_basic_credentials(
+            username=args.username,
+            password=args.password,
+            env_or_none=_env_or_none,
+            username_env_names=(ENABLER_COGNITO_USERNAME,),
+            password_env_names=(ENABLER_COGNITO_PASSWORD,),
+        )
+        resolved = auth_inputs.resolve_agent_request_auth_client(
+            endpoint=args.endpoint,
+            endpoint_env_names=(ENABLER_CREDENTIALS_ENDPOINT,),
+            api_key=args.api_key,
+            api_key_env_names=(ENABLER_API_KEY,),
+            env_or_none=_env_or_none,
+            missing_endpoint_error=(
+                f"missing credentials endpoint (pass --endpoint or set {ENABLER_CREDENTIALS_ENDPOINT})"
+            ),
+            missing_api_key_error=f"missing api key (pass --api-key or set {ENABLER_API_KEY})",
+        )
+    except auth_inputs.AuthInputError as e:
+        raise UsageError(str(e)) from e
+
+    status, _hdrs, data = _http_post_json(
+        url=resolved.endpoint,
+        headers={
+            "authorization": _basic_auth_header(basic.username, basic.password),
+            "x-api-key": resolved.api_key,
+        },
+        body=b"",
+    )
+    body_text = data.decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        raise OpError(f"credentials request failed: status={status} body={body_text}")
+
+    parsed = _load_json_object(raw=body_text, label="credentials response")
+    _ = _write_credentials_cache_from_text(g=g, raw_text=body_text)
+
+    selected_set = str(getattr(args, "set_name", "") or getattr(args, "set", "")).strip()
+    selected_doc = _credential_set_doc(root_doc=parsed, set_name=selected_set)
+    process_obj = _credential_process_doc_to_output(selected_doc)
+    sys.stdout.write(json.dumps(process_obj, separators=(",", ":"), sort_keys=True) + "\n")
     return 0
 
 
@@ -3008,6 +3094,26 @@ def agent_credentials(
         summary=summary,
         json_output=json_output,
         include_headers=include_headers,
+    )
+
+
+@app.command("credential-process", help="Print AWS credential_process JSON for a specific credential set.")
+def agent_credential_process(
+    ctx: typer.Context,
+    set_name: str = typer.Option(..., "--set", help="Credential set key (for example: agentEnablement)"),
+    username: str | None = typer.Option(None, "--username", help=f"Cognito username (or env {ENABLER_COGNITO_USERNAME})"),
+    password: str | None = typer.Option(None, "--password", help=f"Cognito password (or env {ENABLER_COGNITO_PASSWORD})"),
+    endpoint: str | None = typer.Option(None, "--endpoint", help=f"Override credentials endpoint (or env {ENABLER_CREDENTIALS_ENDPOINT})"),
+    api_key: str | None = typer.Option(None, "--api-key", help=f"Override API key value (or env {ENABLER_API_KEY})"),
+) -> None:
+    _invoke(
+        ctx,
+        cmd_agent_credential_process,
+        set_name=set_name,
+        username=username,
+        password=password,
+        endpoint=endpoint,
+        api_key=api_key,
     )
 
 

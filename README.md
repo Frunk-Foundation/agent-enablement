@@ -74,6 +74,40 @@ Examples:
 # - .enabler/cognito.env
 ```
 
+## AWS credential_process (Ongoing STS Refresh)
+
+Use `credential_process` profiles so AWS CLI/SDKs fetch fresh STS creds on demand.
+
+```bash
+# Print strict credential_process JSON for one set
+./enabler credential-process --set agentEnablement
+```
+
+Example `~/.aws/config` profiles:
+
+```ini
+[profile enabler-enablement]
+region = us-east-2
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentEnablement'
+
+[profile enabler-workshop-provisioning]
+region = us-east-2
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopProvisioning'
+
+[profile enabler-workshop-runtime]
+region = us-east-2
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopRuntime'
+```
+
+Then run tools with the appropriate profile, for example:
+
+```bash
+AWS_PROFILE=enabler-enablement aws sts get-caller-identity
+```
+
+Migration guide for existing agents/scripts that still source `sts.env`:
+- `docs/agent-credential-process-migration.md`
+
 ## Shortlinks Output Modes
 
 - Default: two human-readable lines (`code` and `shortURL`).
