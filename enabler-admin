@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# enabler-admin: What could go wrong?
+
+# Run relative to this script location so bundled copies work from any CWD.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Prefer a colocated venv for deterministic deps (repo use case).
+export ENABLER_CLI_ROLE=admin
+if [[ -x "${SCRIPT_DIR}/.venv/bin/python" ]]; then
+  exec "${SCRIPT_DIR}/.venv/bin/python" -m enabler_cli.admin_main "$@"
+fi
+
+# Fall back to system python and inject script directory into import path so
+# `python -m enabler_cli.admin_main` can find the package.
+export PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m enabler_cli.admin_main "$@"

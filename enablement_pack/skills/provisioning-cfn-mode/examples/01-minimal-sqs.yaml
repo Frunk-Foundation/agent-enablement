@@ -1,0 +1,13 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: agent provisioning example 01 (minimal SQS)
+
+Resources:
+  TestQueue:
+    Type: AWS::SQS::Queue
+
+Outputs:
+  QueueUrl:
+    Value: !Ref TestQueue
+  QueueArn:
+    Value: !GetAtt TestQueue.Arn
+
