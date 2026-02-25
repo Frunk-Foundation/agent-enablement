@@ -10,6 +10,8 @@ This repo provides an agent-first runtime flow with split credential and MCP sur
 ## API Surface
 
 - `POST /v1/credentials`: returns short-lived STS credentials and runtime references
+- `POST /v1/delegate-token`: named-agent mint of one-time delegate token (Cognito bearer)
+- `POST /v1/credentials/exchange`: delegate token exchange for ephemeral credentials
 - `POST /v1/links`: creates shortlinks (Cognito bearer)
 - `GET /l/{code}`: resolves shortlinks
 - `/v1/taskboard/*`: taskboard operations (Cognito bearer)
@@ -155,10 +157,14 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./e
 ./enabler-admin cognito create-user --username <u> --password <p>
 ./enabler-admin cognito remove-user <u>
 ./enabler-admin agent onboard <username> <password>
+./enabler-admin agent onboard <username> <password> --profile-type named
+./enabler-admin agent seed-profile --username <u> --password <p> --profile-type ephemeral
 ./enabler-admin agent decommission <username>
 ./enabler-admin agent handoff create --username <u> --password <p> --out handoff.json
 ./enabler-admin agent handoff print-env --file handoff.json
 ```
+
+Ephemeral profiles (`profileType=ephemeral`) are hard-blocked from `agentAWSWorkshop*` credential sets.
 
 ## Skills Layout
 

@@ -3,6 +3,10 @@ import os
 import re
 import time
 import base64
+import hashlib
+import hmac
+import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -49,6 +53,12 @@ CREDENTIALS_PATH = os.environ.get("CREDENTIALS_PATH", "/v1/credentials")
 CREDENTIALS_REFRESH_PATH = os.environ.get(
     "CREDENTIALS_REFRESH_PATH", "/v1/credentials/refresh"
 )
+DELEGATE_TOKEN_PATH = os.environ.get("DELEGATE_TOKEN_PATH", "/v1/delegate-token")
+CREDENTIALS_EXCHANGE_PATH = os.environ.get(
+    "CREDENTIALS_EXCHANGE_PATH", "/v1/credentials/exchange"
+)
+DELEGATE_TOKEN_SIGNING_SECRET = os.environ.get("DELEGATE_TOKEN_SIGNING_SECRET", "")
+USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 SHORTLINK_CREATE_PATH = os.environ.get("SHORTLINK_CREATE_PATH", "/v1/links")
 SHORTLINK_REDIRECT_PREFIX = os.environ.get("SHORTLINK_REDIRECT_PREFIX", "/l/")
 ENABLEMENT_INDEX_URL = os.environ.get("ENABLEMENT_INDEX_URL", "")
@@ -263,6 +273,114 @@ def _decode_jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(data: str) -> bytes:
+    raw = str(data or "")
+    raw += "=" * (-len(raw) % 4)
+    return base64.urlsafe_b64decode(raw.encode("utf-8"))
+
+
+def _parse_json_body(event: dict[str, Any]) -> dict[str, Any]:
+    raw = event.get("body")
+    if raw is None:
+        return {}
+    text = str(raw)
+    if not text.strip():
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _delegate_token_sign(claims: dict[str, Any]) -> str:
+    if not DELEGATE_TOKEN_SIGNING_SECRET:
+        raise ValueError("missing delegate token signing secret")
+    header = {"alg": "HS256", "typ": "JWT"}
+    head = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    body = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{head}.{body}".encode("utf-8")
+    sig = hmac.new(
+        DELEGATE_TOKEN_SIGNING_SECRET.encode("utf-8"),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    return f"{head}.{body}.{_b64url_encode(sig)}"
+
+
+def _delegate_token_verify(token: str) -> dict[str, Any] | None:
+    parts = str(token or "").split(".")
+    if len(parts) != 3:
+        return None
+    head, body, sig = parts
+    if not DELEGATE_TOKEN_SIGNING_SECRET:
+        return None
+    signing_input = f"{head}.{body}".encode("utf-8")
+    expected_sig = hmac.new(
+        DELEGATE_TOKEN_SIGNING_SECRET.encode("utf-8"),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    try:
+        got_sig = _b64url_decode(sig)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected_sig, got_sig):
+        return None
+    try:
+        claims = json.loads(_b64url_decode(body).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(claims, dict):
+        return None
+    try:
+        exp = int(claims.get("exp") or 0)
+    except Exception:
+        exp = 0
+    now = int(datetime.now(timezone.utc).timestamp())
+    if exp <= now:
+        return None
+    aud = str(claims.get("aud") or "")
+    if aud != "credentials-exchange":
+        return None
+    return claims
+
+
+def _profile_type(item: dict[str, Any]) -> str:
+    raw = _ddb_str(item, "profileType", default="named").strip().lower()
+    if raw in ("", "named"):
+        return "named"
+    if raw == "ephemeral":
+        return "ephemeral"
+    return "invalid"
+
+
+def _parse_bearer_token(event: dict[str, Any]) -> str:
+    auth = _get_header(event, "authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        return ""
+    return str(auth.split(" ", 1)[1] or "").strip()
+
+
+def _authorizer_claim(event: dict[str, Any], key: str) -> str:
+    rc = event.get("requestContext") or {}
+    if not isinstance(rc, dict):
+        return ""
+    auth = rc.get("authorizer") or {}
+    if not isinstance(auth, dict):
+        return ""
+    claims = auth.get("claims") or {}
+    if not isinstance(claims, dict):
+        return ""
+    return str(claims.get(key) or "").strip()
+
+
 def _parse_basic_auth(event: dict[str, Any]) -> tuple[str, str] | None:
     auth = _get_header(event, "authorization")
     if not auth:
@@ -461,10 +579,188 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             wide_event["outcome"] = "error"
             return _response(status_code, body)
 
+        if _request_matches_path(event, DELEGATE_TOKEN_PATH):
+            if not DELEGATE_TOKEN_SIGNING_SECRET:
+                return _response(
+                    500,
+                    {
+                        "errorCode": "MISCONFIGURED",
+                        "message": "Server misconfigured",
+                        "requestId": request_id,
+                    },
+                )
+            caller_sub = _authorizer_claim(event, "sub")
+            caller_username = _authorizer_claim(event, "cognito:username")
+            if not caller_sub:
+                return _response(
+                    401,
+                    {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Missing or invalid caller identity",
+                        "requestId": request_id,
+                    },
+                )
+            caller_profile = _ddb_get_profile(caller_sub)
+            if not caller_profile:
+                return _response(
+                    404,
+                    {
+                        "errorCode": "PROFILE_NOT_FOUND",
+                        "message": "No profile for subject",
+                        "requestId": request_id,
+                    },
+                )
+            if not _ddb_bool(caller_profile, "enabled", default=False):
+                return _response(
+                    403,
+                    {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Profile disabled",
+                        "requestId": request_id,
+                    },
+                )
+            caller_profile_type = _profile_type(caller_profile)
+            if caller_profile_type == "invalid":
+                return _response(
+                    422,
+                    {
+                        "errorCode": "INVALID_PROFILE",
+                        "message": "Unsupported profileType",
+                        "requestId": request_id,
+                    },
+                )
+            if caller_profile_type != "named":
+                return _response(
+                    403,
+                    {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Only named agent profiles may mint delegate tokens",
+                        "requestId": request_id,
+                    },
+                )
+            payload = _parse_json_body(event)
+            scope_in = payload.get("scopes")
+            scopes: list[str] = []
+            if isinstance(scope_in, list):
+                for raw in scope_in:
+                    v = str(raw or "").strip().lower()
+                    if v in {"taskboard", "messages", "files", "shortlinks"} and v not in scopes:
+                        scopes.append(v)
+            if not scopes:
+                scopes = ["taskboard", "messages"]
+            ttl_in = payload.get("ttlSeconds")
+            try:
+                ttl_seconds = int(ttl_in) if ttl_in is not None else 600
+            except Exception:
+                ttl_seconds = 600
+            ttl_seconds = max(60, min(ttl_seconds, _duration_seconds()))
+            purpose = str(payload.get("purpose") or "").strip()[:256]
+            now = datetime.now(timezone.utc)
+            exp = now + timedelta(seconds=ttl_seconds)
+            delegator_agent_id = _ddb_str(caller_profile, "agentId", default="") or caller_username or "named-agent"
+            session_uuid = str(uuid.uuid4())
+            session_id = uuid_text_to_base58_22(session_uuid)
+            ephemeral_username = f"ephem-{session_id}"
+            claims = {
+                "iss": "agent-enablement",
+                "aud": "credentials-exchange",
+                "sub": caller_sub,
+                "delegatorUsername": caller_username,
+                "delegatorAgentId": delegator_agent_id,
+                "profileType": "ephemeral",
+                "ephemeralAgentId": f"ephem-{session_id}",
+                "ephemeralUsername": ephemeral_username,
+                "scope": scopes,
+                "purpose": purpose,
+                "iat": int(now.timestamp()),
+                "exp": int(exp.timestamp()),
+                "jti": uuid_text_to_base58_22(str(uuid.uuid4())),
+            }
+            delegate_token = _delegate_token_sign(claims)
+            return _response(
+                200,
+                {
+                    "kind": "agent-enablement.delegate-token.v1",
+                    "requestId": request_id,
+                    "delegateToken": delegate_token,
+                    "expiresAt": exp.isoformat(),
+                    "scopes": scopes,
+                    "ephemeralUsername": ephemeral_username,
+                    "ephemeralAgentId": claims["ephemeralAgentId"],
+                },
+            )
+
         auth_result: dict[str, Any] = {}
+        claims: dict[str, Any] = {}
         input_username = ""
         auth_mode = "basic"
-        if _request_matches_path(event, CREDENTIALS_REFRESH_PATH):
+        if _request_matches_path(event, CREDENTIALS_EXCHANGE_PATH):
+            if not USER_POOL_ID:
+                status_code = 500
+                body = {
+                    "errorCode": "MISCONFIGURED",
+                    "message": "Server misconfigured",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "error"
+                return _response(status_code, body)
+            delegate_token = _parse_bearer_token(event)
+            claims = _delegate_token_verify(delegate_token)
+            if not claims:
+                status_code = 401
+                body = {
+                    "errorCode": "UNAUTHORIZED",
+                    "message": "Missing or invalid delegate token",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "unauthorized"
+                return _response(status_code, body)
+            ephemeral_username = str(claims.get("ephemeralUsername") or "").strip()
+            ephemeral_agent_id = str(claims.get("ephemeralAgentId") or "").strip()
+            if not ephemeral_username or not ephemeral_agent_id:
+                status_code = 401
+                body = {
+                    "errorCode": "UNAUTHORIZED",
+                    "message": "Invalid delegate token claims",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "unauthorized"
+                return _response(status_code, body)
+            generated_password = (
+                f"{secrets.token_urlsafe(12)}A1!"
+            )[:32]
+            try:
+                _cognito().admin_create_user(
+                    UserPoolId=USER_POOL_ID,
+                    Username=ephemeral_username,
+                    MessageAction="SUPPRESS",
+                )
+            except Exception as e:
+                if type(e).__name__ == "UsernameExistsException":
+                    status_code = 401
+                    body = {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Delegate token already used",
+                        "requestId": request_id,
+                    }
+                    wide_event["outcome"] = "unauthorized"
+                    return _response(status_code, body)
+                raise
+            _cognito().admin_set_user_password(
+                UserPoolId=USER_POOL_ID,
+                Username=ephemeral_username,
+                Password=generated_password,
+                Permanent=True,
+            )
+            resp = _cognito().initiate_auth(
+                ClientId=USER_POOL_CLIENT_ID,
+                AuthFlow="USER_PASSWORD_AUTH",
+                AuthParameters={"USERNAME": ephemeral_username, "PASSWORD": generated_password},
+            )
+            auth_mode = "delegate-token"
+            auth_result = resp.get("AuthenticationResult") or {}
+            input_username = ephemeral_username
+        elif _request_matches_path(event, CREDENTIALS_REFRESH_PATH):
             auth_mode = "refresh-token"
             refresh_token = _parse_refresh_token(event)
             if not refresh_token:
@@ -571,6 +867,37 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             wide_event["outcome"] = "unauthorized"
             return _response(status_code, body)
 
+        if auth_mode == "delegate-token":
+            # Best-effort replay protection without nonce store: token reuse collides on username.
+            try:
+                _ddb().put_item(
+                    TableName=PROFILE_TABLE_NAME,
+                    Item={
+                        "sub": {"S": sub},
+                        "enabled": {"BOOL": True},
+                        "profileType": {"S": "ephemeral"},
+                        "credentialScope": {"S": "runtime"},
+                        "assumeRoleArn": {"S": ASSUME_ROLE_RUNTIME_ARN},
+                        "agentId": {"S": str(claims.get("ephemeralAgentId") or "ephemeral")},
+                        "s3Bucket": {"S": UPLOAD_BUCKET},
+                        "commsFilesBucket": {"S": COMMS_FILES_BUCKET},
+                        "sqsQueueArn": {"S": SQS_QUEUE_ARN},
+                        "inboxQueueArn": {"S": SQS_QUEUE_ARN},
+                        "inboxQueueUrl": {"S": _queue_url_from_arn(SQS_QUEUE_ARN)},
+                        "eventBusArn": {"S": EVENT_BUS_ARN},
+                        "instructionText": {"S": "Ephemeral delegated profile"},
+                    },
+                )
+            except Exception as e:
+                status_code = 500
+                body = {
+                    "errorCode": "PROFILE_UPSERT_FAILED",
+                    "message": f"Failed to upsert ephemeral profile: {e}",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "error"
+                return _response(status_code, body)
+
         profile_item = _ddb_get_profile(sub)
         if not profile_item:
             status_code = 404
@@ -599,6 +926,16 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             body = {
                 "errorCode": "INVALID_PROFILE",
                 "message": "Unsupported credentialScope",
+                "requestId": request_id,
+            }
+            wide_event["outcome"] = "invalid_profile"
+            return _response(status_code, body)
+        profile_type = _profile_type(profile_item)
+        if profile_type == "invalid":
+            status_code = 422
+            body = {
+                "errorCode": "INVALID_PROFILE",
+                "message": "Unsupported profileType",
                 "requestId": request_id,
             }
             wide_event["outcome"] = "invalid_profile"
@@ -711,6 +1048,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             "agent_workload_boundary_arn": AGENT_WORKLOAD_BOUNDARY_ARN,
             "assume_role_arn": assume_role_arn,
             "sub_b58": sub_b58,
+            "profile_type": profile_type,
         }
 
         tags = [
@@ -744,7 +1082,8 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         agent_workshop_provisioning_expiration_iso = ""
         agent_workshop_runtime_creds: dict[str, Any] = {}
         agent_workshop_runtime_expiration_iso = ""
-        if agent_workshop_enabled:
+        workshop_sets_issued = False
+        if agent_workshop_enabled and profile_type == "named":
             agent_workshop_assume_common_kwargs = {
                 "RoleSessionName": _session_name(f"{cognito_username}-{sub[:8]}"),
                 "DurationSeconds": _duration_seconds(),
@@ -1138,7 +1477,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             "agentEnablement": enablement_set,
         }
 
-        if agent_workshop_enabled:
+        if agent_workshop_enabled and profile_type == "named":
             agent_workshop_region = (AGENT_WORKSHOP_REGION or "").strip() or _aws_region()
             agent_workshop_account_id = (AGENT_WORKSHOP_ACCOUNT_ID or "").strip() or _arn_account_id(
                 ASSUME_ROLE_AGENT_WORKSHOP_PROVISIONING_ARN
@@ -1392,8 +1731,10 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             body["credentialSets"]["agentAWSWorkshopRuntime"] = (
                 agent_workshop_runtime_set
             )
+            workshop_sets_issued = True
 
         wide_event["outcome"] = "success"
+        wide_event["workshop_sets_issued"] = workshop_sets_issued
         wide_event["status_code"] = 200
         return _response(status_code, body)
     except Exception as exc:

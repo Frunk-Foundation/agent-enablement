@@ -516,6 +516,9 @@ def cmd_agent_seed_profile(args: argparse.Namespace, g: GlobalOpts) -> int:
     agent_id = (args.agent_id or username).strip()
     if not agent_id:
         raise UsageError("agent id cannot be empty")
+    profile_type = str(getattr(args, "profile_type", "") or "named").strip().lower()
+    if profile_type not in {"named", "ephemeral"}:
+        raise UsageError("profile type must be named or ephemeral")
 
     groups = _parse_groups_csv(args.groups or _env_or_none("AGENT_GROUPS"))
     dry_run = bool(args.dry_run)
@@ -604,6 +607,7 @@ def cmd_agent_seed_profile(args: argparse.Namespace, g: GlobalOpts) -> int:
         item: dict[str, Any] = {
             "sub": {"S": sub},
             "enabled": {"BOOL": True},
+            "profileType": {"S": profile_type},
             "credentialScope": {"S": scope},
             "assumeRoleArn": {"S": assume_role_arn},
             "agentId": {"S": agent_id},
@@ -646,6 +650,7 @@ def cmd_agent_seed_profile(args: argparse.Namespace, g: GlobalOpts) -> int:
         "username": username,
         "agentId": agent_id,
         "credentialScope": scope,
+        "profileType": profile_type,
         "groups": groups,
         "inbox": {"queueName": inbox_queue_name, "queueUrl": inbox_queue_url, "queueArn": inbox_queue_arn},
         "tables": {"agentProfiles": profiles_table, "agentGroupMembers": group_table},
@@ -674,6 +679,7 @@ def cmd_agent_onboard(args: argparse.Namespace, g: GlobalOpts) -> int:
         username=username,
         password=password,
         credential_scope=args.credential_scope,
+        profile_type=getattr(args, "profile_type", None),
         agent_id=args.agent_id,
         groups=args.groups,
         create_inbox=args.create_inbox,

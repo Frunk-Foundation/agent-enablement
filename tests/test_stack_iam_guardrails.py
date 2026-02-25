@@ -92,6 +92,10 @@ def test_credentials_handler_uses_explicit_scope_role_env_vars(monkeypatch):
     assert "ENABLEMENT_SKILLS_ROOT_URL" in env_vars
     assert "ENABLEMENT_VERSION" in env_vars
     assert "CREDENTIALS_REFRESH_PATH" in env_vars
+    assert "CREDENTIALS_EXCHANGE_PATH" in env_vars
+    assert "DELEGATE_TOKEN_PATH" in env_vars
+    assert "DELEGATE_TOKEN_SIGNING_SECRET" in env_vars
+    assert "USER_POOL_ID" in env_vars
     assert "ASSUME_ROLE_ARN" not in env_vars
 
 
@@ -352,11 +356,32 @@ def test_taskboard_routes_use_cognito_user_pools_authorizer(monkeypatch):
     ]
 
     # Cognito-authorized routes:
-    # taskboard (11 routes) + links create (1 route)
-    assert len(methods) == 12
+    # taskboard (11 routes) + links create (1 route) + delegate-token (1 route)
+    assert len(methods) == 13
     for m in methods:
         props = m.get("Properties") or {}
         assert props.get("ApiKeyRequired") is not True
+
+
+def test_credentials_exchange_route_is_api_key_protected(monkeypatch):
+    template = _synth_template(monkeypatch)
+    resources = template["Resources"]
+    exchange_resource_id = next(
+        logical_id
+        for logical_id, resource in resources.items()
+        if resource.get("Type") == "AWS::ApiGateway::Resource"
+        and (resource.get("Properties") or {}).get("PathPart") == "exchange"
+    )
+    exchange_method = next(
+        resource
+        for resource in resources.values()
+        if resource.get("Type") == "AWS::ApiGateway::Method"
+        and ((resource.get("Properties") or {}).get("HttpMethod") == "POST")
+        and (((resource.get("Properties") or {}).get("ResourceId") or {}).get("Ref") == exchange_resource_id)
+    )
+    props = exchange_method.get("Properties") or {}
+    assert props.get("AuthorizationType") == "NONE"
+    assert props.get("ApiKeyRequired") is True
 
 
 def test_shortlink_resolve_route_uses_apigw_direct_dynamodb_getitem(monkeypatch):

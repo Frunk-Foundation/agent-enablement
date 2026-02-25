@@ -18,6 +18,7 @@ def _load_handler(monkeypatch):
     monkeypatch.setenv("MAX_TTL_SECONDS", "3600")
     monkeypatch.setenv("SCHEMA_VERSION", "2026-02-17")
     monkeypatch.setenv("USER_POOL_CLIENT_ID", "client-1")
+    monkeypatch.setenv("USER_POOL_ID", "pool-1")
     monkeypatch.setenv("UPLOAD_BUCKET", "test-bucket")
     monkeypatch.setenv("SQS_QUEUE_ARN", "arn:aws:sqs:us-east-1:123456789012:q")
     monkeypatch.setenv("EVENT_BUS_ARN", "arn:aws:events:us-east-1:123456789012:event-bus/b")
@@ -767,3 +768,171 @@ def test_provisioning_scope_missing_boundary_arn_returns_500(monkeypatch):
 
     assert out["statusCode"] == 500
     assert "MISCONFIGURED" in out["body"]
+
+
+def test_ephemeral_profile_omits_agent_workshop_credential_sets(monkeypatch):
+    monkeypatch.setenv(
+        "ASSUME_ROLE_AGENT_WORKSHOP_PROVISIONING_ARN",
+        "arn:aws:iam::999999999999:role/AgentSandboxProvisioning",
+    )
+    monkeypatch.setenv(
+        "ASSUME_ROLE_AGENT_WORKSHOP_RUNTIME_ARN",
+        "arn:aws:iam::999999999999:role/AgentSandboxRuntime",
+    )
+    monkeypatch.setenv(
+        "AGENT_WORKSHOP_CFN_EXECUTION_ROLE_ARN",
+        "arn:aws:iam::999999999999:role/agentawsworkshop-cfn-exec",
+    )
+    monkeypatch.setenv(
+        "AGENT_WORKSHOP_WORKLOAD_BOUNDARY_ARN",
+        "arn:aws:iam::999999999999:policy/agentawsworkshop-agent-workload-boundary",
+    )
+    monkeypatch.setenv("AGENT_WORKSHOP_ACCOUNT_ID", "999999999999")
+    monkeypatch.setenv("AGENT_WORKSHOP_REGION", "us-east-2")
+    handler_module = _load_handler(monkeypatch)
+
+    class FakeCognito:
+        def initiate_auth(self, **kwargs):
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephemeral-user"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c"}}
+
+    def fake_get_item(**kwargs):
+        return {
+            "Item": {
+                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                "enabled": {"BOOL": True},
+                "profileType": {"S": "ephemeral"},
+                "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                "s3Bucket": {"S": "test-bucket"},
+                "agentId": {"S": "ephemeral-agent"},
+                "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
+            }
+        }
+
+    class FakeSts:
+        def __init__(self):
+            self.calls = 0
+
+        def assume_role(self, **kwargs):
+            self.calls += 1
+            return {
+                "Credentials": {
+                    "AccessKeyId": "ASIA123",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                    "Expiration": datetime(2026, 2, 10, tzinfo=timezone.utc),
+                }
+            }
+
+    sts = FakeSts()
+    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    handler_module._sts_client = sts
+    handler_module._cognito_client = FakeCognito()
+
+    import base64
+
+    basic = base64.b64encode(b"u:p").decode()
+    event = {"headers": {"Authorization": f"Basic {basic}"}, "requestContext": {"requestId": "r1"}}
+    out = handler_module.handler(event, None)
+    body = json.loads(out["body"])
+
+    assert out["statusCode"] == 200
+    assert sts.calls == 1
+    assert "credentialSets" in body
+    assert "agentEnablement" in body["credentialSets"]
+    assert "agentAWSWorkshopProvisioning" not in body["credentialSets"]
+    assert "agentAWSWorkshopRuntime" not in body["credentialSets"]
+
+
+def test_invalid_profile_type_returns_422(monkeypatch):
+    handler_module = _load_handler(monkeypatch)
+
+    class FakeCognito:
+        def initiate_auth(self, **kwargs):
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "agent-user"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c"}}
+
+    def fake_get_item(**kwargs):
+        return {
+            "Item": {
+                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                "enabled": {"BOOL": True},
+                "profileType": {"S": "unexpected"},
+                "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                "s3Bucket": {"S": "test-bucket"},
+                "agentId": {"S": "agent-user"},
+                "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
+            }
+        }
+
+    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    handler_module._cognito_client = FakeCognito()
+
+    import base64
+
+    basic = base64.b64encode(b"u:p").decode()
+    event = {"headers": {"Authorization": f"Basic {basic}"}, "requestContext": {"requestId": "r1"}}
+    out = handler_module.handler(event, None)
+
+    assert out["statusCode"] == 422
+    assert "Unsupported profileType" in out["body"]
+
+
+def test_delegate_token_route_issues_signed_token_for_named_profile(monkeypatch):
+    monkeypatch.setenv("DELEGATE_TOKEN_SIGNING_SECRET", "test-secret")
+    handler_module = _load_handler(monkeypatch)
+
+    def fake_get_item(**kwargs):
+        return {
+            "Item": {
+                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                "enabled": {"BOOL": True},
+                "profileType": {"S": "named"},
+                "agentId": {"S": "named-agent"},
+            }
+        }
+
+    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    event = {
+        "path": "/v1/delegate-token",
+        "body": json.dumps({"scopes": ["taskboard", "messages"], "ttlSeconds": 600, "purpose": "test"}),
+        "requestContext": {
+            "requestId": "r1",
+            "authorizer": {
+                "claims": {
+                    "sub": "21ebf510-90f1-7051-64e1-865ec0c362a8",
+                    "cognito:username": "named-user",
+                }
+            },
+        },
+    }
+    out = handler_module.handler(event, None)
+    body = json.loads(out["body"])
+
+    assert out["statusCode"] == 200
+    assert body["kind"] == "agent-enablement.delegate-token.v1"
+    assert isinstance(body.get("delegateToken"), str)
+    assert body["delegateToken"].count(".") == 2
+
+
+def test_credentials_exchange_missing_delegate_token_is_unauthorized(monkeypatch):
+    monkeypatch.setenv("DELEGATE_TOKEN_SIGNING_SECRET", "test-secret")
+    handler_module = _load_handler(monkeypatch)
+    out = handler_module.handler(
+        {"path": "/v1/credentials/exchange", "headers": {}, "requestContext": {"requestId": "r1"}},
+        None,
+    )
+    assert out["statusCode"] == 401
+    assert "Missing or invalid delegate token" in out["body"]

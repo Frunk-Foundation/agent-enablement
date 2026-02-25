@@ -3,7 +3,9 @@ import json
 
 from enabler_cli.admin_commands import cmd_agent_decommission
 from enabler_cli.admin_commands import cmd_cognito_remove_user
+from enabler_cli.admin_commands import cmd_agent_seed_profile
 from enabler_cli.cli_shared import GlobalOpts
+from enabler_cli.cli_shared import UsageError
 
 
 def _g() -> GlobalOpts:
@@ -176,3 +178,94 @@ def test_cmd_agent_decommission_executes_full_teardown(monkeypatch, capsys):
     assert calls["deleted_queue"] == 1
     # One profile delete + two group membership deletes.
     assert len(calls["ddb_deletes"]) == 3
+
+
+def test_cmd_agent_seed_profile_defaults_profile_type_named(monkeypatch, capsys):
+    put_calls: list[dict] = []
+
+    class FakeCreds:
+        username = "alice"
+        password = "secret"
+
+    class FakeSQS:
+        def create_queue(self, **kwargs):
+            return {"QueueUrl": "https://sqs.us-east-2.amazonaws.com/111122223333/agent-inbox-alice"}
+
+        def get_queue_attributes(self, **kwargs):
+            return {"Attributes": {"QueueArn": "arn:aws:sqs:us-east-2:111122223333:agent-inbox-alice"}}
+
+        def tag_queue(self, **kwargs):
+            return None
+
+    class FakeDDB:
+        def put_item(self, **kwargs):
+            put_calls.append(kwargs)
+
+    class FakeSession:
+        def client(self, name):
+            if name == "sqs":
+                return FakeSQS()
+            if name == "dynamodb":
+                return FakeDDB()
+            raise AssertionError(name)
+
+    fake_ctx = _FakeAdminContext(
+        session=FakeSession(),
+        outputs={
+            "AgentProfilesTableName": "profiles-table",
+            "AgentGroupMembersTableName": "group-members-table",
+            "BrokerRuntimeRoleArn": "arn:aws:iam::123456789012:role/BrokerRuntime",
+            "BrokerProvisioningRoleArn": "arn:aws:iam::123456789012:role/BrokerProvisioning",
+            "UploadBucketName": "upload-bucket",
+            "CommsSharedBucketName": "comms-bucket",
+            "QueueArn": "arn:aws:sqs:us-east-2:123456789012:q",
+            "EventBusArn": "arn:aws:events:us-east-2:123456789012:event-bus/b",
+        },
+    )
+    monkeypatch.setattr("enabler_cli.admin_commands._resolve_cognito_basic_credentials", lambda **_kwargs: FakeCreds())
+    monkeypatch.setattr("enabler_cli.admin_commands._cognito_auth_result", lambda **_kwargs: {"IdToken": "a.b.c"})
+    monkeypatch.setattr("enabler_cli.admin_commands._jwt_payload", lambda _tok: {"sub": "sub-1"})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(
+        username="alice",
+        password="secret",
+        credential_scope=None,
+        profile_type=None,
+        agent_id=None,
+        groups=None,
+        create_inbox=True,
+        inbox_queue_name=None,
+        dry_run=False,
+        client_id=None,
+    )
+    assert cmd_agent_seed_profile(args, _g()) == 0
+    _ = capsys.readouterr()
+    profile_put = next(c for c in put_calls if c["TableName"] == "profiles-table")
+    assert profile_put["Item"]["profileType"]["S"] == "named"
+
+
+def test_cmd_agent_seed_profile_rejects_invalid_profile_type(monkeypatch):
+    class FakeCreds:
+        username = "alice"
+        password = "secret"
+
+    monkeypatch.setattr("enabler_cli.admin_commands._resolve_cognito_basic_credentials", lambda **_kwargs: FakeCreds())
+    args = argparse.Namespace(
+        username="alice",
+        password="secret",
+        credential_scope=None,
+        profile_type="bad-value",
+        agent_id=None,
+        groups=None,
+        create_inbox=True,
+        inbox_queue_name=None,
+        dry_run=True,
+        client_id=None,
+    )
+    try:
+        cmd_agent_seed_profile(args, _g())
+    except UsageError as e:
+        assert "profile type must be named or ephemeral" in str(e)
+        return
+    raise AssertionError("expected UsageError")

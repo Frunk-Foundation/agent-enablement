@@ -235,6 +235,16 @@ class AgentEnablementStack(Stack):
             generate_secret=False,
             refresh_token_validity=Duration.days(1),
         )
+        delegate_token_signing_secret = secretsmanager.Secret(
+            self,
+            "DelegateTokenSigningSecret",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                password_length=64,
+                exclude_punctuation=True,
+                include_space=False,
+            ),
+            removal_policy=stateful_removal_policy,
+        )
 
         # Canonical prefix: agent-enablement/latest/...
         enablement_base_url = (
@@ -830,7 +840,17 @@ class AgentEnablementStack(Stack):
             )
         )
 
-        profile_table.grant_read_data(lambda_execution_role)
+        lambda_execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "cognito-idp:AdminCreateUser",
+                    "cognito-idp:AdminSetUserPassword",
+                ],
+                resources=[user_pool.user_pool_arn],
+            )
+        )
+
+        profile_table.grant_read_write_data(lambda_execution_role)
 
         # Bundle handler needs read access to the enablement pack prefix and write access
         # under bundles/. Keep these narrow; presigned URLs are scoped to bundle keys.
@@ -880,12 +900,16 @@ class AgentEnablementStack(Stack):
             "MAX_TTL_SECONDS": str(session_duration_seconds),
             "SCHEMA_VERSION": schema_version,
             "USER_POOL_CLIENT_ID": user_pool_client.user_pool_client_id,
+            "USER_POOL_ID": user_pool.user_pool_id,
             "UPLOAD_BUCKET": upload_bucket.bucket_name,
             "SQS_QUEUE_ARN": agent_queue.queue_arn,
             "EVENT_BUS_ARN": agent_bus.event_bus_arn,
             "COMMS_FILES_BUCKET": comms_files_bucket.bucket_name,
             "CREDENTIALS_PATH": "/v1/credentials",
             "CREDENTIALS_REFRESH_PATH": "/v1/credentials/refresh",
+            "DELEGATE_TOKEN_PATH": "/v1/delegate-token",
+            "CREDENTIALS_EXCHANGE_PATH": "/v1/credentials/exchange",
+            "DELEGATE_TOKEN_SIGNING_SECRET": delegate_token_signing_secret.secret_value.unsafe_unwrap(),
             "BUNDLE_PATH": "/v1/bundle",
             "TASKBOARD_PATH": "/v1/taskboard",
             "SHORTLINK_CREATE_PATH": "/v1/links",
@@ -1143,6 +1167,8 @@ class AgentEnablementStack(Stack):
         v1 = rest_api.root.add_resource("v1")
         credentials = v1.add_resource("credentials")
         credentials_refresh = credentials.add_resource("refresh")
+        credentials_exchange = credentials.add_resource("exchange")
+        delegate_token = v1.add_resource("delegate-token")
         bundle = v1.add_resource("bundle")
         links = v1.add_resource("links")
         taskboard = v1.add_resource("taskboard")
@@ -1181,6 +1207,18 @@ class AgentEnablementStack(Stack):
             apigw.LambdaIntegration(credentials_fn),
             authorization_type=apigw.AuthorizationType.NONE,
             api_key_required=True,
+        )
+        credentials_exchange.add_method(
+            "POST",
+            apigw.LambdaIntegration(credentials_fn),
+            authorization_type=apigw.AuthorizationType.NONE,
+            api_key_required=True,
+        )
+        delegate_token.add_method(
+            "POST",
+            apigw.LambdaIntegration(credentials_fn),
+            authorization_type=apigw.AuthorizationType.COGNITO,
+            authorizer=taskboard_authorizer,
         )
         bundle.add_method(
             "POST",
