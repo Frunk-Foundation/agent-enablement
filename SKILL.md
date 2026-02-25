@@ -62,3 +62,4 @@ just test
 ## Wish I Knew Earlier
 
 - MCP stdio framing here must be newline-delimited JSON-RPC. `Content-Length` framing causes Codex MCP startup timeout symptoms even when the server process is fast.
+- Delegation flow depends on cache persona: `delegate-token create` only works with a named-agent credential cache. After `exchange`, cache becomes ephemeral, so minting another delegate token fails until named credentials are restored (for example, refresh from named auth context).

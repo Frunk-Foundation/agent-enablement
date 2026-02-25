@@ -47,6 +47,15 @@ export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
 ./enabler-creds credential-process --set agentEnablement
 ```
 
+Ephemeral delegation flow (named agent -> delegate token -> exchange):
+
+```bash
+./enabler-creds delegate-token create --scopes taskboard,messages --ttl-seconds 600 --purpose "session bootstrap"
+./enabler-creds exchange --delegate-token '<token>'
+# or one-step:
+./enabler-creds bootstrap-ephemeral --scopes taskboard,messages --ttl-seconds 600
+```
+
 5. For agents, launch MCP:
 
 ```bash

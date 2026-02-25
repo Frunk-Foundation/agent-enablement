@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import click
 import typer
@@ -33,7 +34,13 @@ from .runtime_core import (
     _write_sts_env_files_from_doc,
     _rich_error,
 )
-from .cli_shared import ENABLER_CREDS_CACHE, ENABLER_NO_AUTO_REFRESH_CREDS, GlobalOpts
+from .cli_shared import (
+    ENABLER_API_KEY,
+    ENABLER_CREDS_CACHE,
+    ENABLER_NO_AUTO_REFRESH_CREDS,
+    GlobalOpts,
+)
+from .apps.agent_admin_cli import _http_post_json
 
 
 app = typer.Typer(
@@ -105,6 +112,98 @@ def app_callback(
 
 def _ensure_doc(g: GlobalOpts) -> dict[str, object]:
     return _resolve_runtime_credentials_doc(argparse.Namespace(), g)
+
+
+def _runtime_credentials_endpoint(doc: dict[str, object]) -> str:
+    auth = doc.get("auth")
+    if isinstance(auth, dict):
+        endpoint = str(auth.get("credentialsEndpoint") or "").strip()
+        if endpoint:
+            return endpoint
+    refs = doc.get("references")
+    if isinstance(refs, dict):
+        for key in ("credentials", "auth"):
+            item = refs.get(key)
+            if not isinstance(item, dict):
+                continue
+            endpoint = str(item.get("invokeUrl") or item.get("endpoint") or "").strip()
+            if endpoint:
+                return endpoint
+    return ""
+
+
+def _id_token_from_doc(doc: dict[str, object]) -> str:
+    tokens = doc.get("cognitoTokens")
+    if isinstance(tokens, dict):
+        tok = str(tokens.get("idToken") or "").strip()
+        if tok:
+            return tok
+    sets = doc.get("credentialSets")
+    if isinstance(sets, dict):
+        for val in sets.values():
+            if not isinstance(val, dict):
+                continue
+            st = val.get("cognitoTokens")
+            if not isinstance(st, dict):
+                continue
+            tok = str(st.get("idToken") or "").strip()
+            if tok:
+                return tok
+    return ""
+
+
+def _derive_endpoint(credentials_endpoint: str, *, suffix: str) -> str:
+    raw = str(credentials_endpoint or "").strip()
+    if not raw:
+        raise UsageError("missing credentials endpoint in cached auth metadata")
+    parsed = urlparse(raw)
+    path = str(parsed.path or "").rstrip("/")
+    if not path.endswith("/v1/credentials"):
+        raise UsageError(
+            "cannot derive endpoint from credentials endpoint "
+            f"{raw!r} (expected path ending with /v1/credentials)"
+        )
+    target_path = path[: -len("/v1/credentials")] + suffix
+    return urlunparse(parsed._replace(path=target_path))
+
+
+def _json_obj_or_error(*, raw: bytes, label: str) -> dict[str, object]:
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(text)
+    except Exception as e:
+        raise OpError(f"invalid JSON from {label}: {e}; body={text}") from e
+    if not isinstance(parsed, dict):
+        raise OpError(f"invalid JSON from {label}: expected object")
+    return parsed
+
+
+def _post_json_checked(*, url: str, headers: dict[str, str], body_obj: dict[str, object] | None = None, label: str) -> dict[str, object]:
+    body = b""
+    if isinstance(body_obj, dict):
+        body = json.dumps(body_obj, separators=(",", ":")).encode("utf-8")
+    status, _hdrs, raw = _http_post_json(url=url, headers=headers, body=body)
+    if status < 200 or status >= 300:
+        text = raw.decode("utf-8", errors="replace")
+        raise OpError(f"{label} failed: status={status} body={text}")
+    return _json_obj_or_error(raw=raw, label=label)
+
+
+def _write_exchange_artifacts(*, g: GlobalOpts, response_obj: dict[str, object]) -> dict[str, object]:
+    raw_text = json.dumps(response_obj, separators=(",", ":"), sort_keys=True)
+    path = _write_credentials_cache_from_text(g=g, raw_text=raw_text)
+    sts_env_paths = _write_sts_env_files_from_doc(g=g, root_doc=response_obj)
+    cognito_env_path = str(_write_cognito_env_file_from_doc(g=g, root_doc=response_obj))
+    manifest = _credentials_location_manifest(
+        g=g,
+        doc=response_obj,
+        sts_env_paths=sts_env_paths,
+        cognito_env_path=cognito_env_path,
+    )
+    return {
+        "cachePath": str(path),
+        "manifest": manifest,
+    }
 
 
 @app.command("summary", help="Print credentials artifact locations and freshness summary.")
@@ -195,6 +294,142 @@ def credential_process(
     selected_doc = _credential_set_doc(root_doc=doc, set_name=set_name)
     out = _credential_process_doc_to_output(selected_doc)
     sys.stdout.write(json.dumps(out, separators=(",", ":"), sort_keys=True) + "\n")
+
+
+delegate_token_app = typer.Typer(
+    help="Delegate token helpers for ephemeral credential exchange.",
+    no_args_is_help=True,
+)
+app.add_typer(delegate_token_app, name="delegate-token")
+
+
+@delegate_token_app.command("create", help="Mint a delegate token as a named profile.")
+def delegate_token_create(
+    ctx: typer.Context,
+    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
+    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
+    purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
+) -> None:
+    g = _ctx_global(ctx)
+    doc = _ensure_doc(g)
+    id_token = _id_token_from_doc(doc)
+    if not id_token:
+        raise UsageError("cached credentials missing cognitoTokens.idToken")
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
+    requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
+    payload = {
+        "scopes": requested_scopes,
+        "ttlSeconds": int(ttl_seconds),
+        "purpose": str(purpose or ""),
+    }
+    out = _post_json_checked(
+        url=delegate_endpoint,
+        headers={
+            "authorization": f"Bearer {id_token}",
+            "content-type": "application/json",
+        },
+        body_obj=payload,
+        label="delegate token request",
+    )
+    _print_json(out, pretty=g.pretty)
+
+
+@app.command("exchange", help="Exchange delegate token for ephemeral credentials and write cache artifacts.")
+def exchange(
+    ctx: typer.Context,
+    delegate_token: str = typer.Option(..., "--delegate-token", help="Delegate token JWT from delegate-token create"),
+) -> None:
+    g = _ctx_global(ctx)
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+    doc = _ensure_doc(g)
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
+    resp = _post_json_checked(
+        url=exchange_endpoint,
+        headers={
+            "x-api-key": api_key,
+            "authorization": f"Bearer {delegate_token}",
+        },
+        label="credentials exchange request",
+    )
+    artifacts = _write_exchange_artifacts(g=g, response_obj=resp)
+    payload = {
+        "kind": "enabler.creds.exchange.v1",
+        "principal": resp.get("principal"),
+        "credentialSets": sorted(
+            list((resp.get("credentialSets") or {}).keys())
+        )
+        if isinstance(resp.get("credentialSets"), dict)
+        else [],
+        **artifacts,
+    }
+    _print_json(payload, pretty=g.pretty)
+
+
+@app.command("bootstrap-ephemeral", help="Create delegate token then exchange it, writing cache artifacts.")
+def bootstrap_ephemeral(
+    ctx: typer.Context,
+    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
+    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
+    purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
+) -> None:
+    g = _ctx_global(ctx)
+    doc = _ensure_doc(g)
+    id_token = _id_token_from_doc(doc)
+    if not id_token:
+        raise UsageError("cached credentials missing cognitoTokens.idToken")
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
+    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
+    requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
+    delegate_resp = _post_json_checked(
+        url=delegate_endpoint,
+        headers={
+            "authorization": f"Bearer {id_token}",
+            "content-type": "application/json",
+        },
+        body_obj={
+            "scopes": requested_scopes,
+            "ttlSeconds": int(ttl_seconds),
+            "purpose": str(purpose or ""),
+        },
+        label="delegate token request",
+    )
+    delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
+    if not delegate_token:
+        raise OpError("delegate token response missing delegateToken")
+    exchange_resp = _post_json_checked(
+        url=exchange_endpoint,
+        headers={
+            "x-api-key": api_key,
+            "authorization": f"Bearer {delegate_token}",
+        },
+        label="credentials exchange request",
+    )
+    artifacts = _write_exchange_artifacts(g=g, response_obj=exchange_resp)
+    payload = {
+        "kind": "enabler.creds.bootstrap-ephemeral.v1",
+        "delegate": {
+            "expiresAt": delegate_resp.get("expiresAt"),
+            "scopes": delegate_resp.get("scopes"),
+            "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
+            "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
+        },
+        "principal": exchange_resp.get("principal"),
+        "credentialSets": sorted(
+            list((exchange_resp.get("credentialSets") or {}).keys())
+        )
+        if isinstance(exchange_resp.get("credentialSets"), dict)
+        else [],
+        **artifacts,
+    }
+    _print_json(payload, pretty=g.pretty)
 
 
 def main(argv: list[str] | None = None) -> int:
