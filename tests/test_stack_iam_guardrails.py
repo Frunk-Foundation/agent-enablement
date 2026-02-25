@@ -239,7 +239,7 @@ def test_runtime_boundary_and_role_allow_execute_api_invoke_in_us_east_2(monkeyp
     assert ":*\"" in r_res or ":*]" in r_res or ":*" in r_res
 
 
-def test_runtime_role_can_read_enablement_pack_under_both_prefixes(monkeypatch):
+def test_runtime_role_can_read_agent_enablement_objects_under_both_prefixes(monkeypatch):
     template = _synth_template(monkeypatch)
     statements = _find_inline_policy_statements_for_role(template, "AgentBrokerTargetRole")
     get_obj_statements = [s for s in statements if "s3:GetObject" in _statement_actions(s)]

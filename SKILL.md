@@ -1,70 +1,64 @@
 # aws-toolkit-4-agents (Operator Skill)
 
-This repository implements a bundle-first agent bootstrap system:
+This repository now uses a credentials + MCP runtime model:
 
-1. `POST /v1/bundle` returns a presigned ZIP URL and `connection` metadata.
-2. `POST /v1/credentials` returns short-lived credentials and runtime references.
+1. `POST /v1/credentials` returns short-lived STS credentials and runtime references.
+2. `./enabler-creds` manages credential lifecycle and AWS `credential_process` output.
+3. `./enabler-mcp` exposes runtime tools for agent operations.
 
 ## Core Rules
 
-- Treat `credentials.json` as sensitive.
+- Treat `credentials.json` and Cognito token artifacts as sensitive.
 - Use CloudFormation for provisioning workflows.
-- Keep endpoint/token preflight strict in both CLIs.
-- Keep `enabler` (agent) and `enabler-admin` (admin) surfaces separated.
+- Keep endpoint/token preflight strict.
+- Keep runtime (`enabler-creds`/`enabler-mcp`) and admin (`enabler-admin`) surfaces separated.
 
 ## Current CLI Surfaces
 
-### Agent CLI (`./enabler`)
-- `bundle`
-- `credentials`
-- `files`
-- `messages`
-- `shortlinks`
-- `taskboard`
+### Runtime
+- `./enabler-creds`: `summary`, `status`, `paths`, `refresh`, `credential-process`
+- `./enabler-mcp`: MCP stdio server for taskboard/messages/files/shortlinks
+- `./enabler`: retired shim
 
-### Admin CLI (`./enabler-admin`)
-- `stack-output`
-- `ssm`
-- `cognito`
-- `agent`
-- `pack-build`
-- `pack-publish`
+### Admin
+- `./enabler-admin`: `stack-output`, `ssm`, `cognito`, `agent`
 
 ## Runtime Data Model
 
-### `.enabler/connection.json` (from bundle)
-Contains non-secret service connectivity and auth references, including:
-- `auth`
-- `shortlinks`
-- `taskboard`
-- `files`
-- `cognito`
-- `ssmKeys`
-
-### `.enabler/credentials.json` (from credentials)
+### `.enabler/credentials.json`
 Contains issued STS credentials and runtime references, including:
 - `principal`
 - `credentials`
 - `cognitoTokens`
 - `grants`
 - `constraints`
-- `references` (for `messages`, `s3`, `ssmKeys`, `provisioning`, etc.)
+- `references` (messages, s3, ssmKeys, provisioning, taskboard, shortlinks, files)
 
-## Enablement Pack
+### Additional credential artifacts
+- `.enabler/sts.env`
+- `.enabler/sts-<set>.env`
+- `.enabler/cognito.env`
 
-Pack content is generated from `enablement_pack/manifest.yaml` and published under:
-- `agent-enablement/<version>/...`
-- `agent-enablement/latest/...`
-- `agent-enablement/latest.json`
+## Skills Layout
 
-Legacy multi-prefix publishing is intentionally removed.
+Skills are sourced directly from root `skills/` folders:
+- `skills/get-started/SKILL.md`
+- `skills/messages-basic-ops/SKILL.md`
+- `skills/files-basic-ops/SKILL.md`
+- `skills/shortlinks/SKILL.md`
+- `skills/taskboard-basics/SKILL.md`
+- `skills/ssm-key-access/SKILL.md`
+- `skills/provisioning-cfn-mode/SKILL.md`
 
 ## Operator Shortcuts
 
 ```bash
 ./enabler-admin --help
-./enabler --help
-./enabler-admin pack-build
-./enabler-admin pack-publish --version v1
+./enabler-creds --help
+./enabler-mcp
 just test
 ```
+
+## Wish I Knew Earlier
+
+- MCP stdio framing here must be newline-delimited JSON-RPC. `Content-Length` framing causes Codex MCP startup timeout symptoms even when the server process is fast.

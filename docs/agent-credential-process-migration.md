@@ -2,7 +2,7 @@
 
 ## Audience
 Agents and workflows currently using the old method:
-- run `./enabler credentials`
+- run `./enabler-creds summary`
 - `source .enabler/sts.env` (or set-specific `sts-*.env`)
 - run AWS CLI/SDK commands with exported `AWS_*` session variables
 
@@ -23,7 +23,7 @@ New method benefits:
 Use:
 
 ```bash
-./enabler credential-process --set <credential-set>
+./enabler-creds credential-process --set <credential-set>
 ```
 
 Supported set names:
@@ -39,15 +39,15 @@ Add profiles:
 ```ini
 [profile enabler-enablement]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentEnablement'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentEnablement'
 
 [profile enabler-workshop-provisioning]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopProvisioning'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentAWSWorkshopProvisioning'
 
 [profile enabler-workshop-runtime]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopRuntime'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentAWSWorkshopRuntime'
 ```
 
 ## Cutover steps
@@ -94,10 +94,10 @@ You likely still have exported `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in sh
 ### Verify output shape
 
 ```bash
-./enabler credential-process --set agentEnablement | jq -c 'keys'
+./enabler-creds credential-process --set agentEnablement | jq -c 'keys'
 # expected keys: AccessKeyId, SecretAccessKey, SessionToken, Version (+ Expiration when present)
 ```
 
 ## Cognito note
 This migration covers AWS STS only.
-Cognito tokens are still written to `.enabler/cognito.env` by `./enabler credentials` when needed by non-AWS tooling.
+Cognito tokens are still written to `.enabler/cognito.env` by `./enabler-creds summary` when needed by non-AWS tooling.

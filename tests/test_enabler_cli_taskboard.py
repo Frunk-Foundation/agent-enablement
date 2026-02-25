@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from enabler_cli.cli import (
+from enabler_cli.apps.agent_admin_cli import (
     GlobalOpts,
     UsageError,
     _taskboard_id_token_from_cache,
@@ -55,8 +55,8 @@ def test_cmd_taskboard_create_posts_board(monkeypatch, capsys):
         captured.update(kwargs)
         return {"boardId": "board-1", "name": "alpha"}
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
 
     args = argparse.Namespace(
         name="alpha",
@@ -75,8 +75,8 @@ def test_cmd_taskboard_create_json_output(monkeypatch, capsys):
     def fake_request(**_kwargs):
         return {"boardId": "board-1", "name": "alpha"}
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
 
     args = argparse.Namespace(
         name="alpha",
@@ -94,8 +94,8 @@ def test_cmd_taskboard_add_reads_file_and_posts_lines(monkeypatch, tmp_path, cap
         captured.update(kwargs)
         return {"boardId": "board-1", "added": 2}
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
 
     src = Path(tmp_path) / "tasks.txt"
     src.write_text("first\n\n second \n", encoding="utf-8")
@@ -121,8 +121,8 @@ def test_cmd_taskboard_list_passes_query_and_pagination(monkeypatch, capsys):
         captured.update(kwargs)
         return {"items": [], "nextToken": ""}
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
 
     args = argparse.Namespace(
         board_id="board-1",
@@ -161,9 +161,9 @@ def test_cmd_taskboard_list_prints_next_token_hint(monkeypatch, capsys):
             "nextToken": "abc123",
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
-    monkeypatch.setattr("enabler_cli.cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
     args = argparse.Namespace(
         board_id="board-1",
         search=None,
@@ -200,9 +200,9 @@ def test_cmd_taskboard_list_does_not_truncate_fields(monkeypatch, capsys):
             "nextToken": "",
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
-    monkeypatch.setattr("enabler_cli.cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
     args = argparse.Namespace(
         board_id="board-1",
         search=None,
@@ -224,8 +224,8 @@ def test_cmd_taskboard_list_json_output(monkeypatch, capsys):
     def fake_request(**_kwargs):
         return {"items": [{"taskId": "task-1"}], "nextToken": ""}
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
     args = argparse.Namespace(
         board_id="board-1",
         search=None,
@@ -255,8 +255,8 @@ def test_cmd_taskboard_audit_always_outputs_detailed_json(monkeypatch, capsys):
             "nextToken": "tok-2",
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
     args = argparse.Namespace(
         board_id="board-1",
         task_id="task-1",
@@ -286,9 +286,9 @@ def test_cmd_taskboard_my_activity_keeps_table_with_local_short_timestamp(monkey
             "nextToken": "tok-2",
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
-    monkeypatch.setattr("enabler_cli.cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_local_short_timestamp", lambda _value: "2026-02-18 09:10:11")
     args = argparse.Namespace(
         board_id=None,
         limit="10",
@@ -317,8 +317,8 @@ def test_cmd_taskboard_claim_prints_summary(monkeypatch, capsys):
             }
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
     args = argparse.Namespace(
         board_id="board-1",
         target=None,
@@ -343,8 +343,8 @@ def test_cmd_taskboard_status_prints_compact_counts(monkeypatch, capsys):
             "failed": 1,
         }
 
-    monkeypatch.setattr("enabler_cli.cli._taskboard_request", fake_request)
-    monkeypatch.setattr("enabler_cli.cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_request", fake_request)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._taskboard_auth_for_args", lambda _args, _g: ("https://example.invalid/v1/taskboard", "a.b.c"))
     args = argparse.Namespace(
         board_id="board-1",
         **_auth_args(),
@@ -370,7 +370,7 @@ def test_cmd_taskboard_create_fails_fast_when_taskboard_output_missing(monkeypat
         creds_cache_path="/tmp/enabler-test-no-taskboard-creds.json",
         auto_refresh_creds=False,
     )
-    with pytest.raises(UsageError, match="bundle connection.json"):
+    with pytest.raises(UsageError, match="missing credentials cache"):
         cmd_taskboard_create(args, g)
 
 
@@ -405,7 +405,7 @@ def test_taskboard_group_json_flag_reaches_command(monkeypatch):
         captured["json_output"] = getattr(args, "json_output", None)
         return 0
 
-    monkeypatch.setattr("enabler_cli.cli.cmd_taskboard_create", fake_cmd)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.cmd_taskboard_create", fake_cmd)
     runner = CliRunner()
     result = runner.invoke(app, ["taskboard", "--json", "create"])
     assert result.exit_code == 0

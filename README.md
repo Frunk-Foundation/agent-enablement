@@ -1,13 +1,14 @@
 # Agent Enablement
 
-This repo provides a bundle-first agent bootstrap flow with two CLIs:
+This repo provides an agent-first runtime flow with split credential and MCP surfaces:
 
-- `./enabler`: agent/runtime workflow (`bundle`, `credentials`, `files`, `messages`, `shortlinks`, `taskboard`)
-- `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`, `pack-build`, `pack-publish`)
+- `./enabler-creds`: credential lifecycle (`summary`, `status`, `paths`, `refresh`, `credential-process`)
+- `./enabler-mcp`: agent MCP server (taskboard/messages/files/shortlinks + credential visibility)
+- `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`)
+- `./enabler`: retired; prints migration guidance and exits non-zero
 
 ## API Surface
 
-- `POST /v1/bundle`: returns `bundleUrl` plus non-secret `connection` metadata
 - `POST /v1/credentials`: returns short-lived STS credentials and runtime references
 - `POST /v1/links`: creates shortlinks (Cognito bearer)
 - `GET /l/{code}`: resolves shortlinks
@@ -15,58 +16,57 @@ This repo provides a bundle-first agent bootstrap flow with two CLIs:
 
 ## Agent Quickstart
 
-1. Provide bootstrap env vars:
+1. Install local runtime dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+2. Provide bootstrap env vars:
 
 ```bash
 export ENABLER_COGNITO_USERNAME='<username>'
 export ENABLER_COGNITO_PASSWORD='<password>'
 export ENABLER_API_KEY='<shared-api-key>'
-export ENABLER_BUNDLE_ENDPOINT='<bundle-endpoint-url>'
-# optional when not derivable from bundle auth metadata
 export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
 ```
 
-2. Download bundle and persist connection metadata:
+3. Fetch/refresh runtime credentials and write artifacts:
 
 ```bash
-./enabler bundle
+./enabler-creds summary
 ```
 
-3. Fetch runtime credentials and persist credentials cache:
+4. For AWS CLI/SDK, use `credential_process`:
 
 ```bash
-./enabler credentials
+./enabler-creds credential-process --set agentEnablement
 ```
 
-4. Use runtime commands:
+5. For agents, launch MCP:
 
 ```bash
-./enabler files share ./artifact.txt
-./enabler messages send --to teammate --text "ready"
-./enabler shortlinks create "https://example.com/path/file.txt"
-./enabler taskboard create --name "Sprint"
+./enabler-mcp
 ```
 
-`./enabler files share` prints the public CloudFront URL by default. Use `--json` to include `s3Uri` and other metadata.
+`./enabler-mcp` uses newline-delimited JSON-RPC over stdio (MCP transport). It does not use `Content-Length` framing.
 
 ## Credentials Output Modes
 
 - Default: human-readable artifact locations + freshness status.
-- Full payload JSON: `--json`.
-- Every run writes shell-compatible STS env file(s):
+- Every refresh/summary writes shell-compatible STS env file(s):
   - `.enabler/sts.env` for the active runtime set.
   - One file per credential set when present
     (for example `.enabler/sts-agentenablement.env` and `.enabler/sts-agentawsworkshopprovisioning.env`).
-- Every run writes Cognito token env file: `.enabler/cognito.env`.
+- Writes Cognito token env file: `.enabler/cognito.env`.
 
 Examples:
 
 ```bash
 # Default location output
-./enabler credentials
-
-# Full response JSON
-./enabler credentials --json
+./enabler-creds summary
 
 # Files are written on every run:
 # - .enabler/sts.env
@@ -80,7 +80,7 @@ Use `credential_process` profiles so AWS CLI/SDKs fetch fresh STS creds on deman
 
 ```bash
 # Print strict credential_process JSON for one set
-./enabler credential-process --set agentEnablement
+./enabler-creds credential-process --set agentEnablement
 ```
 
 Example `~/.aws/config` profiles:
@@ -88,15 +88,15 @@ Example `~/.aws/config` profiles:
 ```ini
 [profile enabler-enablement]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentEnablement'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentEnablement'
 
 [profile enabler-workshop-provisioning]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopProvisioning'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentAWSWorkshopProvisioning'
 
 [profile enabler-workshop-runtime]
 region = us-east-2
-credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler credential-process --set agentAWSWorkshopRuntime'
+credential_process = /bin/bash -lc 'cd /Users/jay/Projects/agent_enablement && ./enabler-creds credential-process --set agentAWSWorkshopRuntime'
 ```
 
 Then run tools with the appropriate profile, for example:
@@ -110,41 +110,32 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 
 ## Shortlinks Output Modes
 
-- Default: two human-readable lines (`code` and `shortURL`).
-- JSON mode: use `--json` for the full response payload (`--plain-json` for compact JSON).
+- Exposed through `enabler-mcp` tools:
+  - `shortlinks.exec` (`action=create|resolve_url`)
+  - `ops.result` (for async polling when `async=true`)
 
-Examples:
+## MCP Startup Troubleshooting
+
+- If Codex reports MCP startup timeout, first verify transport framing and process launch command.
+- Quick local handshake check:
 
 ```bash
-# Human-readable default output
-./enabler shortlinks create "https://example.com/path/file.txt"
-
-# Full JSON response
-./enabler shortlinks create "https://example.com/path/file.txt" --json
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./enabler-mcp
 ```
 
 ## Local Cache Model
 
 - Credentials cache: `.enabler/credentials.json` (or `--creds-cache` / `ENABLER_CREDS_CACHE`)
-- Connection cache: `.enabler/connection.json` (written by `enabler bundle`)
-- Bundle ZIP downloads: `.enabler/bundles/`
-
-`enabler` strictly reads runtime endpoints from explicit env/flags or `.enabler/connection.json`.
+- STS env files: `.enabler/sts.env`, `.enabler/sts-<set>.env`
+- Cognito env file: `.enabler/cognito.env`
 
 ## Taskboard Output Modes
 
-- Default: human-readable summaries/tables for fast terminal scanning.
-- JSON mode: prepend `--json` at the taskboard group level for raw API payloads.
-
-Examples:
-
-```bash
-# Human-readable default output
-./enabler taskboard list <board-id> --status pending --limit 25
-
-# Raw JSON output (pretty by default; combine with global --plain-json for compact)
-./enabler taskboard --json list <board-id> --status pending --limit 25
-```
+- Exposed through `enabler-mcp` tools:
+  - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
+  - `messages.exec` (`action=send|recv|ack`)
+  - `files.exec` (`action=share`)
+  - `ops.result` (for async polling when `async=true`)
 
 ## Admin CLI
 
@@ -169,26 +160,17 @@ Examples:
 ./enabler-admin agent handoff print-env --file handoff.json
 ```
 
-### Enablement Pack Build/Publish
+## Skills Layout
 
-```bash
-./enabler-admin pack-build
-./enabler-admin pack-publish --version v1
-```
+Agent skills are now sourced directly from project root:
 
-`pack-publish` uses `--bucket` when provided; otherwise it resolves the bucket from stack output `CommsSharedBucketName`.
-
-## Enablement Pack Layout
-
-`enablement_pack/build_pack.py` produces:
-
-- `enablement_pack/dist/<version>/CONTENTS.md`
-- `enablement_pack/dist/<version>/metadata.json`
-- `enablement_pack/dist/<version>/artifacts/...`
-- `enablement_pack/dist/<version>/skills/...`
-- `enablement_pack/dist/<version>/agent-enablement-bundle.zip`
-
-The bundle is content-only. Credentials and secrets are never embedded in bundle artifacts.
+- `skills/get-started/SKILL.md`
+- `skills/messages-basic-ops/SKILL.md`
+- `skills/files-basic-ops/SKILL.md`
+- `skills/shortlinks/SKILL.md`
+- `skills/taskboard-basics/SKILL.md`
+- `skills/ssm-key-access/SKILL.md`
+- `skills/provisioning-cfn-mode/SKILL.md`
 
 ## Tests
 
@@ -200,4 +182,18 @@ System tests (requires deployed stack + AWS access):
 
 ```bash
 just test-system
+```
+
+## Repo Hygiene
+
+Keep generated/local-only artifacts untracked. In particular, do not commit:
+- `.DS_Store`
+- `__pycache__/` and `*.pyc`
+- `cdk.out/`
+- local `Library/` cache content
+
+Run the lightweight hygiene guard:
+
+```bash
+just hygiene
 ```

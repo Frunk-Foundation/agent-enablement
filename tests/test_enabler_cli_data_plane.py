@@ -5,12 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from enabler_cli.cli import (
+from enabler_cli.apps.agent_admin_cli import (
     GlobalOpts,
     UsageError,
     _resolve_runtime_credentials_doc,
     _taskboard_endpoint_for_args,
-    cmd_agent_bundle,
     cmd_agent_credential_process,
     cmd_agent_credentials,
     cmd_files_share,
@@ -121,11 +120,11 @@ def test_cmd_messages_send_builds_eventbridge_entry(monkeypatch, capsys):
             return FakeEvents()
 
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -166,11 +165,11 @@ def test_cmd_messages_send_defaults_to_agent_enablement_set_when_present(monkeyp
             return FakeEvents()
 
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc_credential_sets_only(),
     )
 
@@ -232,11 +231,11 @@ def test_cmd_messages_recv_loops_batches_without_ack_and_includes_ack_tokens(mon
             return FakeSQS()
 
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -299,11 +298,11 @@ def test_cmd_messages_recv_ack_all_drains_multiple_batches(monkeypatch, capsys):
             return FakeSQS()
 
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -362,13 +361,13 @@ def test_cmd_messages_recv_ack_all_marks_truncated_on_batch_limit(monkeypatch, c
             assert name == "sqs"
             return FakeSQS()
 
-    monkeypatch.setattr("enabler_cli.cli._MESSAGES_RECV_ACK_ALL_MAX_BATCHES", 2)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._MESSAGES_RECV_ACK_ALL_MAX_BATCHES", 2)
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -422,13 +421,13 @@ def test_cmd_messages_recv_without_ack_stops_at_batch_limit(monkeypatch, capsys)
             assert name == "sqs"
             return FakeSQS()
 
-    monkeypatch.setattr("enabler_cli.cli._MESSAGES_RECV_MAX_BATCHES", 2)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._MESSAGES_RECV_MAX_BATCHES", 2)
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -466,11 +465,11 @@ def test_cmd_messages_ack_deletes_from_token(monkeypatch, capsys):
             return FakeSQS()
 
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": FakeSession})})(),
     )
     monkeypatch.setattr(
-        "enabler_cli.cli._resolve_runtime_credentials_doc",
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
         lambda _args, _g: _base_creds_doc(),
     )
 
@@ -520,7 +519,7 @@ def test_cmd_agent_credentials_writes_file_and_prints_location_output(monkeypatc
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     out_path = tmp_path / "credentials.json"
     cache_path = tmp_path / ".enabler" / "cache.json"
@@ -573,7 +572,7 @@ def test_cmd_agent_credentials_default_output_is_location_manifest(monkeypatch, 
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     args = argparse.Namespace(
         username="agent-test",
@@ -622,7 +621,7 @@ def test_cmd_agent_credentials_json_output_respects_pretty_toggle(monkeypatch, t
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     args = argparse.Namespace(
         username="agent-test",
@@ -683,7 +682,7 @@ def test_cmd_agent_credentials_writes_sts_env_file(monkeypatch, tmp_path, capsys
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     cache_path = tmp_path / ".enabler" / "credentials.json"
     args = argparse.Namespace(
@@ -746,7 +745,7 @@ def test_cmd_agent_credentials_writes_credential_set_sts_env_files(monkeypatch, 
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     cache_path = tmp_path / ".enabler" / "credentials.json"
     args = argparse.Namespace(
@@ -799,7 +798,7 @@ def test_cmd_agent_credentials_writes_cognito_env_file(monkeypatch, tmp_path, ca
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     cache_path = tmp_path / ".enabler" / "credentials.json"
     args = argparse.Namespace(
@@ -853,7 +852,7 @@ def test_cmd_agent_credential_process_outputs_enablement_set_json(monkeypatch, c
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
     args = argparse.Namespace(
         set="agentEnablement",
         username="agent-test",
@@ -890,7 +889,7 @@ def test_cmd_agent_credential_process_missing_requested_set_errors(monkeypatch):
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
     args = argparse.Namespace(
         set="agentAWSWorkshopProvisioning",
         username="agent-test",
@@ -920,7 +919,7 @@ def test_cmd_agent_credential_process_missing_required_keys_errors(monkeypatch):
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
         return 200, {}, json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
     args = argparse.Namespace(
         set="agentEnablement",
         username="agent-test",
@@ -983,7 +982,7 @@ def test_resolve_runtime_credentials_doc_prefers_refresh_token_flow(monkeypatch,
         return 200, {}, json.dumps(payload).encode("utf-8")
 
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     doc = _resolve_runtime_credentials_doc(
         argparse.Namespace(),
@@ -1031,7 +1030,7 @@ def test_resolve_runtime_credentials_doc_falls_back_to_basic_when_refresh_fails(
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
     monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "agent-test")
     monkeypatch.setenv("ENABLER_COGNITO_PASSWORD", "pw")
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
     doc = _resolve_runtime_credentials_doc(
         argparse.Namespace(),
@@ -1046,278 +1045,29 @@ def test_resolve_runtime_credentials_doc_falls_back_to_basic_when_refresh_fails(
     assert str(headers.get("authorization", "")).startswith("Basic ")
 
 
-def test_cmd_agent_bundle_downloads_without_cache_update(monkeypatch, tmp_path, capsys):
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps({"bundleUrl": "https://download.invalid/bundle.zip"}).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"zip-bytes")
-        return out_path.stat().st_size
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    cache_path = tmp_path / "bundle-cache.json"
-    out_zip = tmp_path / "bundle.zip"
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=str(out_zip),
-        no_download=False,
-        print_response=False,
-    )
-
-    assert cmd_agent_bundle(args, _g(cache_path=str(cache_path), auto_refresh_creds=True)) == 0
-    captured = capsys.readouterr()
-    assert captured.out.strip() == str(out_zip)
-    assert captured.err == ""
-    assert out_zip.exists()
-
-
-def test_cmd_agent_bundle_defaults_output_under_creds_cache_dir(monkeypatch, tmp_path, capsys):
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps({"bundleUrl": "https://download.invalid/bundle.zip"}).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"zip-bytes")
-        return out_path.stat().st_size
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    cache_path = tmp_path / ".enabler" / "credentials.json"
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=None,
-        no_download=False,
-        print_response=False,
-    )
-
-    assert cmd_agent_bundle(args, _g(cache_path=str(cache_path), auto_refresh_creds=True)) == 0
-    captured = capsys.readouterr()
-    bundle_out_path = Path(captured.out.strip())
-    assert bundle_out_path.exists()
-    assert bundle_out_path.parent == cache_path.parent / "bundles"
-    assert bundle_out_path.name.startswith("agent-enablement-bundle-")
-    assert captured.err == ""
-
-
-def test_cmd_agent_bundle_print_response_and_downloads(monkeypatch, tmp_path, capsys):
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps(
-            {"bundleUrl": "https://download.invalid/bundle.zip", "requestId": "req-1"}
-        ).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"zip-bytes")
-        return out_path.stat().st_size
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    out_zip = tmp_path / "bundle.zip"
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=str(out_zip),
-        no_download=False,
-        print_response=True,
-    )
-
-    assert cmd_agent_bundle(args, _g()) == 0
-    captured = capsys.readouterr()
-    lines = [line for line in captured.out.splitlines() if line.strip()]
-    assert len(lines) == 2
-    payload = json.loads(lines[0])
-    assert payload["requestId"] == "req-1"
-    assert lines[1] == str(out_zip)
-    assert captured.err == ""
-
-
-def test_cmd_agent_bundle_persists_connection_json(monkeypatch, tmp_path, capsys):
-    payload = {
-        "bundleUrl": "https://download.invalid/bundle.zip",
-        "requestId": "req-1",
-        "connection": {
-            "schemaVersion": "2026-02-17",
-            "taskboard": {"invokeUrl": "https://api.example.com/prod/v1/taskboard"},
-            "shortlinks": {
-                "createUrl": "https://api.example.com/prod/v1/links",
-                "redirectBaseUrl": "https://d111111abcdef8.cloudfront.net/l/",
-            },
-        },
-    }
-
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps(payload).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"zip-bytes")
-        return out_path.stat().st_size
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    cache_path = tmp_path / ".enabler" / "credentials.json"
-    out_zip = tmp_path / "bundle.zip"
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=str(out_zip),
-        no_download=False,
-        print_response=False,
-    )
-
-    assert cmd_agent_bundle(args, _g(cache_path=str(cache_path), auto_refresh_creds=True)) == 0
-    captured = capsys.readouterr()
-    assert captured.out.strip() == str(out_zip)
-    connection_path = cache_path.parent / "connection.json"
-    saved = json.loads(connection_path.read_text(encoding="utf-8"))
-    assert saved["taskboard"]["invokeUrl"] == "https://api.example.com/prod/v1/taskboard"
-    assert (connection_path.stat().st_mode & 0o777) == 0o600
-
-
-def test_cmd_agent_bundle_no_download_prints_nothing_by_default(monkeypatch, tmp_path, capsys):
-    called = {"get": 0}
-
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps({"bundleUrl": "https://download.invalid/bundle.zip"}).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        called["get"] += 1
-        return 0
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=None,
-        no_download=True,
-        print_response=False,
-    )
-
-    assert cmd_agent_bundle(args, _g()) == 0
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
-    assert called["get"] == 0
-
-
-def test_cmd_agent_bundle_no_download_with_print_response(monkeypatch, capsys):
-    called = {"get": 0}
-
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps(
-            {"bundleUrl": "https://download.invalid/bundle.zip", "requestId": "req-1"}
-        ).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        called["get"] += 1
-        return 0
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=None,
-        no_download=True,
-        print_response=True,
-    )
-
-    assert cmd_agent_bundle(args, _g()) == 0
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert payload["requestId"] == "req-1"
-    assert called["get"] == 0
-    assert captured.err == ""
-
-
-def test_cmd_agent_bundle_no_download_warns_when_out_set(monkeypatch, tmp_path, capsys):
-    called = {"get": 0}
-    out_zip = tmp_path / "bundle.zip"
-
-    def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
-        return 200, {}, json.dumps({"bundleUrl": "https://download.invalid/bundle.zip"}).encode("utf-8")
-
-    def fake_http_get_to_file(*, url, out_path, timeout_seconds=120):
-        called["get"] += 1
-        return 0
-
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
-    monkeypatch.setattr("enabler_cli.cli._http_get_to_file", fake_http_get_to_file)
-
-    args = argparse.Namespace(
-        username="agent-test",
-        password="pw",
-        endpoint="https://example.invalid/v1/bundle",
-        api_key="api-key",
-        api_key_ssm_name=None,
-        ttl_seconds=None,
-        out=str(out_zip),
-        no_download=True,
-        print_response=False,
-    )
-
-    assert cmd_agent_bundle(args, _g()) == 0
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "warning: --out ignored when --no-download is set" in captured.err
-    assert called["get"] == 0
-    assert not out_zip.exists()
-
-
-def test_taskboard_endpoint_uses_connection_cache(monkeypatch, tmp_path):
+def test_taskboard_endpoint_uses_runtime_refs(monkeypatch, tmp_path):
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
+    cache_path.write_text(
         json.dumps(
             {
-                "taskboard": {
-                    "invokeUrl": "https://bundle.example.com/prod/v1/taskboard",
-                }
+                "references": {"taskboard": {"invokeUrl": "https://api.example.com/prod/v1/taskboard"}},
+                "credentials": {
+                    "accessKeyId": "AKIA_TEST",
+                    "secretAccessKey": "secret",
+                    "sessionToken": "token",
+                },
+                "cognitoTokens": {"idToken": "a.b.c"},
             }
         ),
         encoding="utf-8",
     )
     args = argparse.Namespace()
     endpoint = _taskboard_endpoint_for_args(args, _g(cache_path=str(cache_path)))
-    assert endpoint == "https://bundle.example.com/prod/v1/taskboard"
+    assert endpoint == "https://api.example.com/prod/v1/taskboard"
 
 
-def test_cmd_shortlinks_create_uses_connection_and_bearer(monkeypatch, tmp_path, capsys):
+def test_cmd_shortlinks_create_uses_runtime_refs_and_bearer(monkeypatch, tmp_path, capsys):
     captured = {}
 
     def fake_http_post_json(*, url, headers, body, timeout_seconds=30):
@@ -1332,30 +1082,23 @@ def test_cmd_shortlinks_create_uses_connection_and_bearer(monkeypatch, tmp_path,
             }
         ).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
     monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "agent-test")
     monkeypatch.setenv("ENABLER_COGNITO_PASSWORD", "pw")
     monkeypatch.setenv("ENABLER_API_KEY", "k")
 
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
-        json.dumps(
-            {
-                "awsRegion": "us-east-2",
-                "shortlinks": {
-                    "createUrl": "https://bundle.example.com/prod/v1/links",
-                    "redirectBaseUrl": "https://bundle.example.com/prod/l/",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
     cache_path.write_text(
         json.dumps(
             {
                 "cognitoTokens": {"idToken": "a.b.c"},
+                "references": {
+                    "shortlinks": {
+                        "createUrl": "https://bundle.example.com/prod/v1/links",
+                        "redirectBaseUrl": "https://bundle.example.com/prod/l/",
+                    }
+                },
                 "credentialSets": {
                     "agentEnablement": {
                         "credentials": {
@@ -1397,29 +1140,23 @@ def test_cmd_shortlinks_create_json_output_uses_current_payload_shape(monkeypatc
             }
         ).encode("utf-8")
 
-    monkeypatch.setattr("enabler_cli.cli._http_post_json", fake_http_post_json)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
     monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "agent-test")
     monkeypatch.setenv("ENABLER_COGNITO_PASSWORD", "pw")
     monkeypatch.setenv("ENABLER_API_KEY", "k")
 
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
-        json.dumps(
-            {
-                "awsRegion": "us-east-2",
-                "shortlinks": {
-                    "createUrl": "https://bundle.example.com/prod/v1/links",
-                    "redirectBaseUrl": "https://bundle.example.com/prod/l/",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
     cache_path.write_text(
         json.dumps(
             {
                 "cognitoTokens": {"idToken": "a.b.c"},
+                "references": {
+                    "shortlinks": {
+                        "createUrl": "https://bundle.example.com/prod/v1/links",
+                        "redirectBaseUrl": "https://bundle.example.com/prod/l/",
+                    }
+                },
                 "credentialSets": {
                     "agentEnablement": {
                         "credentials": {
@@ -1448,11 +1185,20 @@ def test_cmd_shortlinks_create_json_output_uses_current_payload_shape(monkeypatc
     assert "createdBy" not in out
 
 
-def test_cmd_shortlinks_resolve_url_uses_connection_cache(monkeypatch, tmp_path, capsys):
+def test_cmd_shortlinks_resolve_url_uses_runtime_refs(monkeypatch, tmp_path, capsys):
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
-        json.dumps({"shortlinks": {"redirectBaseUrl": "https://bundle.example.com/prod/l/"}}),
+    cache_path.write_text(
+        json.dumps(
+            {
+                "references": {"shortlinks": {"redirectBaseUrl": "https://bundle.example.com/prod/l/"}},
+                "credentials": {
+                    "accessKeyId": "AKIA_TEST",
+                    "secretAccessKey": "secret",
+                    "sessionToken": "token",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     args = argparse.Namespace(code="code123")
@@ -1463,12 +1209,13 @@ def test_cmd_shortlinks_resolve_url_uses_connection_cache(monkeypatch, tmp_path,
 def test_cmd_shortlinks_create_requires_redirect_base_url(monkeypatch, tmp_path):
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
-        json.dumps({"shortlinks": {"createUrl": "https://bundle.example.com/prod/v1/links"}}),
-        encoding="utf-8",
-    )
     cache_path.write_text(
-        json.dumps({"cognitoTokens": {"idToken": "a.b.c"}}),
+        json.dumps(
+            {
+                "cognitoTokens": {"idToken": "a.b.c"},
+                "references": {"shortlinks": {"createUrl": "https://bundle.example.com/prod/v1/links"}},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1485,17 +1232,12 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
     source_file.write_text("hello", encoding="utf-8")
     cache_path = tmp_path / ".enabler" / "credentials.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    (cache_path.parent / "connection.json").write_text(
-        json.dumps(
-            {
-                "awsRegion": "us-east-2",
-                "files": {"publicBaseUrl": "https://files.example.net/"},
-            }
-        ),
-        encoding="utf-8",
-    )
     creds_doc = {
         "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
         "credentials": {
             "accessKeyId": "AKIA_TEST",
             "secretAccessKey": "secret",
@@ -1526,12 +1268,12 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
             assert name == "s3"
             return _FakeS3()
 
-    monkeypatch.setattr("enabler_cli.cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
     )
-    monkeypatch.setattr("enabler_cli.cli.uuid4_base58_22", lambda: "1111111111111111111111")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
 
     args = argparse.Namespace(
         file_path=str(source_file),
@@ -1554,6 +1296,10 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
         "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
         "credentials": {
             "accessKeyId": "AKIA_TEST",
             "secretAccessKey": "secret",
@@ -1584,14 +1330,12 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
             assert name == "s3"
             return _FakeS3()
 
-    monkeypatch.setattr("enabler_cli.cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
     monkeypatch.setattr(
-        "enabler_cli.cli.boto3",
+        "enabler_cli.apps.agent_admin_cli.boto3",
         type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
     )
-    monkeypatch.setattr("enabler_cli.cli._connection_region_from_cache", lambda g: "us-east-2")
-    monkeypatch.setattr("enabler_cli.cli._files_public_base_url_from_connection_cache", lambda g: "https://files.example.net/")
-    monkeypatch.setattr("enabler_cli.cli.uuid4_base58_22", lambda: "1111111111111111111111")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
 
     args = argparse.Namespace(
         file_path=str(source_file),
@@ -1609,7 +1353,7 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
     assert payload["key"] == "uploads/u-1/1111111111111111111111/renamed.txt"
 
 
-def test_cmd_files_share_requires_connection_region(monkeypatch, tmp_path):
+def test_cmd_files_share_requires_credentials_region(monkeypatch, tmp_path):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1626,22 +1370,22 @@ def test_cmd_files_share_requires_connection_region(monkeypatch, tmp_path):
             }
         ],
     }
-    monkeypatch.setattr("enabler_cli.cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
-    monkeypatch.setattr("enabler_cli.cli._connection_region_from_cache", lambda g: "")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
 
     args = argparse.Namespace(
         file_path=str(source_file),
         name=None,
         json_output=False,
     )
-    with pytest.raises(UsageError, match="missing awsRegion in bundle connection.json"):
+    with pytest.raises(UsageError, match="missing awsRegion in credentials references"):
         cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
 
 
-def test_cmd_files_share_requires_files_public_base_url(monkeypatch, tmp_path):
+def test_cmd_files_share_falls_back_to_s3_uri_without_public_base_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
+        "awsRegion": "us-east-2",
         "credentials": {
             "accessKeyId": "AKIA_TEST",
             "secretAccessKey": "secret",
@@ -1654,15 +1398,35 @@ def test_cmd_files_share_requires_files_public_base_url(monkeypatch, tmp_path):
                 "resources": ["arn:aws:s3:::upload-bucket/uploads/u-1/*"],
             }
         ],
+        "references": {"awsRegion": "us-east-2"},
     }
-    monkeypatch.setattr("enabler_cli.cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
-    monkeypatch.setattr("enabler_cli.cli._connection_region_from_cache", lambda g: "us-east-2")
-    monkeypatch.setattr("enabler_cli.cli._files_public_base_url_from_connection_cache", lambda g: "")
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    uploaded: dict[str, str] = {}
+
+    class _FakeS3:
+        def upload_file(self, local_path, bucket, key):
+            uploaded["local_path"] = str(local_path)
+            uploaded["bucket"] = bucket
+            uploaded["key"] = key
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            uploaded["region"] = str(kwargs.get("region_name") or "")
+
+        def client(self, name):
+            assert name == "s3"
+            return _FakeS3()
+
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli.boto3",
+        type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
+    )
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
 
     args = argparse.Namespace(
         file_path=str(source_file),
         name=None,
         json_output=False,
     )
-    with pytest.raises(UsageError, match="missing files public base url in bundle connection.json"):
-        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert capsys.readouterr().out.strip() == "s3://upload-bucket/uploads/u-1/1111111111111111111111/payload.txt"

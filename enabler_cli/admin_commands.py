@@ -14,7 +14,6 @@ from .cli_shared import (
     ENABLER_ADMIN_HANDOFF_KIND,
     ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION,
     ENABLER_API_KEY,
-    ENABLER_BUNDLE_ENDPOINT,
     ENABLER_ADMIN_COGNITO_PASSWORD,
     ENABLER_ADMIN_COGNITO_USERNAME,
     ENABLER_COGNITO_PASSWORD,
@@ -698,14 +697,13 @@ def cmd_agent_onboard(args: argparse.Namespace, g: GlobalOpts) -> int:
     return 0
 
 
-def _handoff_doc(*, username: str, password: str, api_key: str, bundle_endpoint: str) -> dict[str, Any]:
+def _handoff_doc(*, username: str, password: str, api_key: str) -> dict[str, Any]:
     return {
         "kind": ENABLER_ADMIN_HANDOFF_KIND,
         "schemaVersion": ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION,
         "username": username,
         "password": password,
         "apiKey": api_key,
-        "bundleEndpoint": bundle_endpoint,
     }
 
 
@@ -722,7 +720,6 @@ def _validate_handoff_doc(doc: dict[str, Any]) -> dict[str, str]:
         "username": str(doc.get("username") or "").strip(),
         "password": str(doc.get("password") or "").strip(),
         "apiKey": str(doc.get("apiKey") or "").strip(),
-        "bundleEndpoint": str(doc.get("bundleEndpoint") or "").strip(),
     }
     missing = [k for k, v in required.items() if not v]
     if missing:
@@ -739,7 +736,6 @@ def _render_handoff_exports(validated: dict[str, str]) -> str:
         ENABLER_COGNITO_USERNAME: validated["username"],
         ENABLER_COGNITO_PASSWORD: validated["password"],
         ENABLER_API_KEY: validated["apiKey"],
-        ENABLER_BUNDLE_ENDPOINT: validated["bundleEndpoint"],
     }
     lines = [f"export {name}={_shell_quote(value)}" for name, value in mapping.items()]
     return "\n".join(lines) + "\n"
@@ -759,7 +755,6 @@ def cmd_agent_handoff_create(args: argparse.Namespace, g: GlobalOpts) -> int:
     ctx = build_admin_context(g)
     username = _require_str(args.username, "username", hint="--username")
     password = _require_str(args.password, "password", hint="--password")
-    bundle_endpoint = str(args.bundle_endpoint or "").strip() or ctx.require_output("BundleInvokeUrl")
     api_key = str(args.api_key or "").strip()
     if not api_key:
         param_name = ctx.resolve_api_key_param_name(args.api_key_ssm_name)
@@ -767,7 +762,7 @@ def cmd_agent_handoff_create(args: argparse.Namespace, g: GlobalOpts) -> int:
     if not api_key:
         raise OpError("failed to resolve API key")
 
-    doc = _handoff_doc(username=username, password=password, api_key=api_key, bundle_endpoint=bundle_endpoint)
+    doc = _handoff_doc(username=username, password=password, api_key=api_key)
     _ = _validate_handoff_doc(doc)
     if args.out:
         out_path = Path(args.out).expanduser().resolve()

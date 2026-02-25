@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: agent provisioning example 02 (Lambda + IAM RoleName + PermissionsBoundary)
+
+Parameters:
+  AgentRoleName:
+    Type: String
+    Description: Must start with the allowlisted prefix derived from cfnExecutionRoleArn (ex: agentawsworkshop-agent-...)
+  RequiredBoundaryArn:
+    Type: String
+    Description: Must equal references.provisioning.requiredRoleBoundaryArn
+
+Resources:
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Do not omit RoleName in this environment.
+      RoleName: !Ref AgentRoleName
+      # Must be set at create time.
+      PermissionsBoundary: !Ref RequiredBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HelloFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import json
+
+          def handler(event, context):
+              return {
+                  "statusCode": 200,
+                  "headers": {"content-type": "application/json"},
+                  "body": json.dumps({"ok": True}),
+              }
+
+Outputs:
+  FunctionName:
+    Value: !Ref HelloFunction
+  RoleName:
+    Value: !Ref FunctionRole

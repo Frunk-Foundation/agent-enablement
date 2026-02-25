@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .cli import main_admin
+from .apps.agent_admin_cli import main_admin
 
 
 if __name__ == "__main__":
