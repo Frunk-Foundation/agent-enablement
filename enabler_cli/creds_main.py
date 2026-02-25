@@ -36,7 +36,7 @@ from .runtime_core import (
 )
 from .cli_shared import (
     ENABLER_API_KEY,
-    ENABLER_CREDS_CACHE,
+    ENABLER_AGENT_ID,
     ENABLER_NO_AUTO_REFRESH_CREDS,
     GlobalOpts,
 )
@@ -79,10 +79,10 @@ def _ctx_global(ctx: typer.Context) -> GlobalOpts:
 @app.callback()
 def app_callback(
     ctx: typer.Context,
-    creds_cache: str | None = typer.Option(
+    agent_id: str | None = typer.Option(
         None,
-        "--creds-cache",
-        help=f"Path to cached credentials JSON (default: .enabler/credentials.json; env override: {ENABLER_CREDS_CACHE})",
+        "--agent-id",
+        help=f"Managed identity key (env override: {ENABLER_AGENT_ID})",
     ),
     no_auto_refresh_creds: bool = typer.Option(
         False,
@@ -99,7 +99,7 @@ def app_callback(
         profile=None,
         region=None,
         stack=None,
-        creds_cache=creds_cache,
+        agent_id=agent_id,
         auto_refresh_creds=not (
             no_auto_refresh_creds or _truthy(os.environ.get(ENABLER_NO_AUTO_REFRESH_CREDS))
         ),
@@ -107,6 +107,8 @@ def app_callback(
         quiet=quiet,
     )
     g = _apply_global_env(ns)
+    if not g.agent_id:
+        raise UsageError(f"missing agent id (pass --agent-id or set {ENABLER_AGENT_ID})")
     ctx.obj = {"g": g}
 
 
@@ -247,6 +249,7 @@ def paths(ctx: typer.Context) -> None:
     root = _artifact_root(g)
     payload = {
         "kind": "enabler.creds.paths.v1",
+        "agentId": g.agent_id,
         "root": str(root),
         "credentialsJson": str(_credentials_cache_file(g)),
         "stsDefaultEnv": str((root / "sts.env").resolve()),
@@ -301,6 +304,12 @@ delegate_token_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(delegate_token_app, name="delegate-token")
+
+session_app = typer.Typer(
+    help="Managed agent-id session helpers.",
+    no_args_is_help=True,
+)
+app.add_typer(session_app, name="session")
 
 
 @delegate_token_app.command("create", help="Mint a delegate token as a named profile.")
@@ -430,6 +439,197 @@ def bootstrap_ephemeral(
         **artifacts,
     }
     _print_json(payload, pretty=g.pretty)
+
+
+@session_app.command("status", help="Print session status for an agent id.")
+def session_status(
+    ctx: typer.Context,
+    agent_id: str = typer.Option(..., "--agent-id", help="Agent identity key"),
+) -> None:
+    base = _ctx_global(ctx)
+    g = GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        auto_refresh_creds=base.auto_refresh_creds,
+        agent_id=agent_id,
+    )
+    doc = _ensure_doc(g)
+    expires_at = _credentials_expires_at(doc)
+    freshness, seconds_to_expiry = _credentials_freshness(expires_at)
+    payload = {
+        "kind": "enabler.session.status.v1",
+        "agentId": agent_id,
+        "cachePath": str(_credentials_cache_file(g)),
+        "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
+        "expiresAt": expires_at,
+    }
+    _print_json(payload, pretty=g.pretty)
+
+
+@session_app.command("list", help="List locally managed sessions.")
+def session_list(ctx: typer.Context) -> None:
+    g = _ctx_global(ctx)
+    root = _artifact_root(g)
+    sessions_root = root.parent
+    sessions: list[dict[str, object]] = []
+    if sessions_root.exists():
+        for session_dir in sorted([p for p in sessions_root.iterdir() if p.is_dir()]):
+            session_file = session_dir / "session.json"
+            if not session_file.exists():
+                continue
+            sessions.append(
+                {
+                    "agentId": session_dir.name,
+                    "sessionPath": str(session_file.resolve()),
+                    "exists": True,
+                }
+            )
+    _print_json({"kind": "enabler.session.list.v1", "sessions": sessions}, pretty=g.pretty)
+
+
+@session_app.command("revoke", help="Remove local session artifacts for an agent id.")
+def session_revoke(
+    ctx: typer.Context,
+    agent_id: str = typer.Option(..., "--agent-id", help="Agent identity key"),
+) -> None:
+    base = _ctx_global(ctx)
+    g = GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        auto_refresh_creds=False,
+        agent_id=agent_id,
+    )
+    path = _credentials_cache_file(g)
+    removed = False
+    if path.exists():
+        path.unlink()
+        removed = True
+    root = _artifact_root(g)
+    for child in root.glob("*.env"):
+        child.unlink(missing_ok=True)
+    _print_json(
+        {
+            "kind": "enabler.session.revoke.v1",
+            "agentId": agent_id,
+            "sessionPath": str(path),
+            "removed": removed,
+        },
+        pretty=g.pretty,
+    )
+
+
+@session_app.command("bootstrap-named", help="Fetch named credentials into the target session.")
+def session_bootstrap_named(
+    ctx: typer.Context,
+    agent_id: str = typer.Option(..., "--agent-id", help="Target agent identity key"),
+) -> None:
+    base = _ctx_global(ctx)
+    g = GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        auto_refresh_creds=True,
+        agent_id=agent_id,
+    )
+    raw_text, doc = _fetch_credentials_doc_text_for_cache(g, current_doc=None)
+    path = _write_credentials_cache_from_text(g=g, raw_text=raw_text)
+    sts_env_paths = _write_sts_env_files_from_doc(g=g, root_doc=doc)
+    cognito_env_path = str(_write_cognito_env_file_from_doc(g=g, root_doc=doc))
+    manifest = _credentials_location_manifest(
+        g=g,
+        doc=doc,
+        sts_env_paths=sts_env_paths,
+        cognito_env_path=cognito_env_path,
+    )
+    _print_json(
+        {
+            "kind": "enabler.session.bootstrap-named.v1",
+            "agentId": agent_id,
+            "cachePath": str(path),
+            "manifest": manifest,
+        },
+        pretty=g.pretty,
+    )
+
+
+@session_app.command("bootstrap-ephemeral", help="Create delegate token from named session and exchange into ephemeral session.")
+def session_bootstrap_ephemeral(
+    ctx: typer.Context,
+    agent_id: str = typer.Option(..., "--agent-id", help="Target ephemeral identity key"),
+    from_agent_id: str = typer.Option(..., "--from-agent-id", help="Source named identity key"),
+    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
+    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
+    purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
+) -> None:
+    base = _ctx_global(ctx)
+    source_g = GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        auto_refresh_creds=True,
+        agent_id=from_agent_id,
+    )
+    target_g = GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        auto_refresh_creds=True,
+        agent_id=agent_id,
+    )
+    doc = _ensure_doc(source_g)
+    id_token = _id_token_from_doc(doc)
+    if not id_token:
+        raise UsageError("cached credentials missing cognitoTokens.idToken")
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
+    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
+    requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
+    delegate_resp = _post_json_checked(
+        url=delegate_endpoint,
+        headers={
+            "authorization": f"Bearer {id_token}",
+            "content-type": "application/json",
+        },
+        body_obj={
+            "scopes": requested_scopes,
+            "ttlSeconds": int(ttl_seconds),
+            "purpose": str(purpose or ""),
+        },
+        label="delegate token request",
+    )
+    delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
+    if not delegate_token:
+        raise OpError("delegate token response missing delegateToken")
+    exchange_resp = _post_json_checked(
+        url=exchange_endpoint,
+        headers={
+            "x-api-key": api_key,
+            "authorization": f"Bearer {delegate_token}",
+        },
+        label="credentials exchange request",
+    )
+    artifacts = _write_exchange_artifacts(g=target_g, response_obj=exchange_resp)
+    _print_json(
+        {
+            "kind": "enabler.session.bootstrap-ephemeral.v1",
+            "agentId": agent_id,
+            "fromAgentId": from_agent_id,
+            "delegate": {
+                "expiresAt": delegate_resp.get("expiresAt"),
+                "scopes": delegate_resp.get("scopes"),
+                "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
+                "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
+            },
+            "principal": exchange_resp.get("principal"),
+            **artifacts,
+        },
+        pretty=base.pretty,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

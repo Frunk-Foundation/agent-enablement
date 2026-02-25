@@ -44,6 +44,7 @@ from .runtime_core import (
     cmd_taskboard_unclaim,
 )
 from .cli_shared import GlobalOpts
+from .cli_shared import ENABLER_AGENT_ID
 
 ToolFunc = Callable[[dict[str, Any]], Any]
 
@@ -70,17 +71,20 @@ class OperationRecord:
 
 
 class EnablerMcp:
-    def __init__(self) -> None:
+    def __init__(self, *, agent_id: str = "") -> None:
         ns = _namespace(
             profile=None,
             region=None,
             stack=None,
             creds_cache=None,
+            agent_id=agent_id,
             auto_refresh_creds=True,
             plain_json=False,
             quiet=True,
         )
         self.g: GlobalOpts = _apply_global_env(ns)
+        if not self.g.agent_id:
+            raise UsageError(f"missing agent id (pass --agent-id or set {ENABLER_AGENT_ID})")
         self.tools: dict[str, ToolDef] = {}
         self._operations: dict[str, OperationRecord] = {}
         self._operations_lock = threading.Lock()
@@ -300,6 +304,8 @@ class EnablerMcp:
         sets = doc.get("credentialSets") if isinstance(doc.get("credentialSets"), dict) else {}
         return {
             "kind": "enabler.creds.status.v1",
+            "agentId": self.g.agent_id,
+            "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "expiresAt": expires_at,
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
             "credentialSets": sorted(list(sets.keys())),
@@ -321,6 +327,8 @@ class EnablerMcp:
         freshness, seconds_to_expiry = _credentials_freshness(expires_at)
         return {
             "kind": "enabler.creds.ensure.v1",
+            "agentId": self.g.agent_id,
+            "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "set": set_name or "agentEnablement",
             "expiration": process.get("Expiration", ""),
             "ready": True,
@@ -665,8 +673,8 @@ def _write_message(stdout: Any, payload: dict[str, Any]) -> None:
     stdout.flush()
 
 
-def serve_stdio() -> int:
-    server = EnablerMcp()
+def serve_stdio(*, agent_id: str = "") -> int:
+    server = EnablerMcp(agent_id=agent_id)
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
 

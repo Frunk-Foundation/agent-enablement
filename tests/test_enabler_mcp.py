@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import select
 import subprocess
 import time
@@ -35,12 +36,18 @@ def _seed_cache(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
+def _session_cache(tmp_path: Path, monkeypatch, *, agent_id: str = "agent-a") -> Path:
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    cache = tmp_path / "sessions" / agent_id / "session.json"
     _seed_cache(cache)
-    monkeypatch.setenv("ENABLER_CREDS_CACHE", str(cache))
+    return cache
 
-    mcp = EnablerMcp()
+
+def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 
     assert isinstance(resp, dict)
@@ -58,11 +65,9 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
 
 
 def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
-    monkeypatch.setenv("ENABLER_CREDS_CACHE", str(cache))
+    _session_cache(tmp_path, monkeypatch)
 
-    mcp = EnablerMcp()
+    mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
         {
             "jsonrpc": "2.0",
@@ -79,7 +84,9 @@ def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_taskboard_tool_requires_cognito_id_token(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
+    cache = tmp_path / "sessions" / "agent-a" / "session.json"
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
     exp = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     payload = {
         "expiresAt": exp,
@@ -95,10 +102,9 @@ def test_taskboard_tool_requires_cognito_id_token(monkeypatch, tmp_path: Path) -
             }
         },
     }
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setenv("ENABLER_CREDS_CACHE", str(cache))
-
-    mcp = EnablerMcp()
+    mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
         {
             "jsonrpc": "2.0",
@@ -114,7 +120,9 @@ def test_taskboard_tool_requires_cognito_id_token(monkeypatch, tmp_path: Path) -
 
 
 def test_sts_tools_require_agent_enablement_set(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
+    cache = tmp_path / "sessions" / "agent-a" / "session.json"
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
     exp = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     payload = {
         "expiresAt": exp,
@@ -130,10 +138,9 @@ def test_sts_tools_require_agent_enablement_set(monkeypatch, tmp_path: Path) -> 
             }
         },
     }
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setenv("ENABLER_CREDS_CACHE", str(cache))
-
-    mcp = EnablerMcp()
+    mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
         {
             "jsonrpc": "2.0",
@@ -158,7 +165,7 @@ def test_auth_refresh_failure_maps_to_structured_error(monkeypatch) -> None:
         ),
     )
 
-    mcp = EnablerMcp()
+    mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
         {
             "jsonrpc": "2.0",
@@ -174,9 +181,7 @@ def test_auth_refresh_failure_maps_to_structured_error(monkeypatch) -> None:
 
 
 def test_async_operation_lifecycle(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
-    monkeypatch.setenv("ENABLER_CREDS_CACHE", str(cache))
+    _session_cache(tmp_path, monkeypatch)
 
     def _fake_recv(_args, _g):
         print(json.dumps({"kind": "enabler.messages.recv.v1", "messages": []}))
@@ -184,7 +189,7 @@ def test_async_operation_lifecycle(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("enabler_cli.mcp_server.cmd_messages_recv", _fake_recv)
 
-    mcp = EnablerMcp()
+    mcp = EnablerMcp(agent_id="agent-a")
     submit = mcp.handle_request(
         {
             "jsonrpc": "2.0",
@@ -224,12 +229,15 @@ def test_async_operation_lifecycle(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_stdio_newline_transport_initialize_and_tools_list() -> None:
+    env = dict(os.environ)
+    env["ENABLER_AGENT_ID"] = "agent-a"
     proc = subprocess.Popen(
         ["./enabler-mcp"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
         cwd=str(Path(__file__).resolve().parents[1]),
     )
     assert proc.stdin is not None

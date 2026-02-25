@@ -43,15 +43,22 @@ def _seed_cache(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_credential_process_reads_cached_set(tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
+def _session_cache(tmp_path: Path, monkeypatch, *, agent_id: str = "agent-a") -> Path:
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    cache = tmp_path / "sessions" / agent_id / "session.json"
     _seed_cache(cache)
+    return cache
+
+
+def test_credential_process_reads_cached_set(tmp_path: Path, monkeypatch) -> None:
+    _session_cache(tmp_path, monkeypatch)
 
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "credential-process",
             "--set",
@@ -65,13 +72,12 @@ def test_credential_process_reads_cached_set(tmp_path: Path) -> None:
     assert parsed["AccessKeyId"] == "ASIAEXAMPLE"
 
 
-def test_status_reports_set_names(tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
+def test_status_reports_set_names(tmp_path: Path, monkeypatch) -> None:
+    _session_cache(tmp_path, monkeypatch)
 
     result = runner.invoke(
         app,
-        ["--creds-cache", str(cache), "--no-auto-refresh-creds", "status"],
+        ["--agent-id", "agent-a", "--no-auto-refresh-creds", "status"],
     )
 
     assert result.exit_code == 0
@@ -80,8 +86,7 @@ def test_status_reports_set_names(tmp_path: Path) -> None:
 
 
 def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
+    _session_cache(tmp_path, monkeypatch)
     called: dict[str, object] = {}
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
@@ -105,8 +110,8 @@ def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Pa
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "delegate-token",
             "create",
@@ -127,8 +132,7 @@ def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Pa
 
 
 def test_exchange_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
+    _session_cache(tmp_path, monkeypatch)
     monkeypatch.setenv("ENABLER_API_KEY", "key-1")
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
@@ -168,8 +172,8 @@ def test_exchange_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path)
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "exchange",
             "--delegate-token",
@@ -184,14 +188,13 @@ def test_exchange_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path)
 
 
 def test_exchange_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
+    _session_cache(tmp_path, monkeypatch)
     monkeypatch.delenv("ENABLER_API_KEY", raising=False)
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "exchange",
             "--delegate-token",
@@ -203,8 +206,7 @@ def test_exchange_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_bootstrap_ephemeral_chains_delegate_and_exchange(monkeypatch, tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
-    _seed_cache(cache)
+    _session_cache(tmp_path, monkeypatch)
     monkeypatch.setenv("ENABLER_API_KEY", "key-1")
     calls: list[str] = []
 
@@ -267,8 +269,8 @@ def test_bootstrap_ephemeral_chains_delegate_and_exchange(monkeypatch, tmp_path:
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "bootstrap-ephemeral",
         ],
@@ -282,8 +284,10 @@ def test_bootstrap_ephemeral_chains_delegate_and_exchange(monkeypatch, tmp_path:
     ]
 
 
-def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path) -> None:
-    cache = tmp_path / "credentials.json"
+def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    cache = tmp_path / "sessions" / "agent-a" / "session.json"
     _seed_cache(cache)
     payload = json.loads(cache.read_text(encoding="utf-8"))
     payload["auth"]["credentialsEndpoint"] = "https://api.example.com/prod/v1/bundle"
@@ -292,8 +296,8 @@ def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path) 
     result = runner.invoke(
         app,
         [
-            "--creds-cache",
-            str(cache),
+            "--agent-id",
+            "agent-a",
             "--no-auto-refresh-creds",
             "delegate-token",
             "create",
@@ -301,3 +305,25 @@ def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path) 
     )
     assert result.exit_code == 1
     assert "expected path ending with /v1/credentials" in str(result.exception)
+
+
+def test_requires_agent_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 1
+    assert "missing agent id" in str(result.exception)
+
+
+def test_session_list_and_revoke(tmp_path: Path, monkeypatch) -> None:
+    cache = _session_cache(tmp_path, monkeypatch, agent_id="agent-list")
+    result = runner.invoke(app, ["--agent-id", "agent-list", "session", "list"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.stdout)
+    assert any(item["agentId"] == "agent-list" for item in parsed["sessions"])
+
+    revoke = runner.invoke(app, ["--agent-id", "agent-list", "session", "revoke", "--agent-id", "agent-list"])
+    assert revoke.exit_code == 0
+    revoke_payload = json.loads(revoke.stdout)
+    assert revoke_payload["removed"] is True
+    assert not Path(revoke_payload["sessionPath"]).exists()

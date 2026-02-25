@@ -46,11 +46,13 @@ from ..agent_commands import event_bus_name_from_arn
 from ..cli_shared import ENABLER_ADMIN_COGNITO_PASSWORD
 from ..cli_shared import ENABLER_ADMIN_COGNITO_USERNAME
 from ..cli_shared import ENABLER_API_KEY
+from ..cli_shared import ENABLER_AGENT_ID
 from ..cli_shared import ENABLER_COGNITO_PASSWORD
 from ..cli_shared import ENABLER_COGNITO_USERNAME
 from ..cli_shared import ENABLER_CREDENTIALS_ENDPOINT
 from ..cli_shared import ENABLER_CREDS_CACHE
 from ..cli_shared import ENABLER_NO_AUTO_REFRESH_CREDS
+from ..cli_shared import ENABLER_SESSION_ROOT
 from ..cli_shared import GlobalOpts
 from ..cli_shared import OpError as SharedOpError
 from ..cli_shared import UsageError as SharedUsageError
@@ -203,7 +205,7 @@ def _load_json_object(*, raw: str, label: str) -> dict[str, Any]:
 
 
 def _credentials_cache_file(g: GlobalOpts) -> Path:
-    raw = (g.creds_cache_path or "").strip() or _default_credentials_cache_path()
+    raw = (g.creds_cache_path or "").strip() or _default_credentials_cache_path_for_agent(g.agent_id)
     return Path(raw).expanduser().resolve()
 
 
@@ -880,7 +882,25 @@ def _truthy(raw: str | None) -> bool:
 
 
 def _default_credentials_cache_path() -> str:
-    return str((Path.cwd() / ".enabler" / "credentials.json").resolve())
+    agent_id = str(_env_or_none(ENABLER_AGENT_ID) or "default").strip() or "default"
+    return _default_credentials_cache_path_for_agent(agent_id)
+
+
+def _default_credentials_cache_path_for_agent(agent_id: str) -> str:
+    resolved_agent_id = str(agent_id or "").strip() or "default"
+    return str((_default_session_root() / "sessions" / resolved_agent_id / "session.json").resolve())
+
+
+def _default_session_root() -> Path:
+    raw = str(_env_or_none(ENABLER_SESSION_ROOT) or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    xdg_state_home = str(_env_or_none("XDG_STATE_HOME") or "").strip()
+    if xdg_state_home:
+        return (Path(xdg_state_home).expanduser().resolve() / "enabler")
+    if sys.platform == "darwin":
+        return (Path.home() / "Library" / "Application Support" / "enabler").resolve()
+    return (Path.home() / ".local" / "state" / "enabler").resolve()
 
 
 def _cli_role() -> str:
@@ -1218,10 +1238,11 @@ def _apply_global_env(args: argparse.Namespace) -> GlobalOpts:
         os.environ["AWS_REGION"] = str(args.region).strip()
     # If the user didn't explicitly pass --stack, defer to env.
     stack = (getattr(args, "stack", None) or _env_or_none("STACK") or "AgentEnablementStack").strip()
+    agent_id = str(getattr(args, "agent_id", None) or _env_or_none(ENABLER_AGENT_ID) or "").strip()
     creds_cache_path = (
         getattr(args, "creds_cache", None)
         or _env_or_none(ENABLER_CREDS_CACHE)
-        or _default_credentials_cache_path()
+        or _default_credentials_cache_path_for_agent(agent_id)
     )
     auto_refresh_creds = bool(
         getattr(args, "auto_refresh_creds", not _truthy(os.environ.get(ENABLER_NO_AUTO_REFRESH_CREDS)))
@@ -1232,6 +1253,7 @@ def _apply_global_env(args: argparse.Namespace) -> GlobalOpts:
         quiet=bool(getattr(args, "quiet", False)),
         creds_cache_path=str(creds_cache_path).strip(),
         auto_refresh_creds=auto_refresh_creds,
+        agent_id=agent_id,
     )
 
 

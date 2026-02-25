@@ -33,6 +33,7 @@ export ENABLER_COGNITO_USERNAME='<username>'
 export ENABLER_COGNITO_PASSWORD='<password>'
 export ENABLER_API_KEY='<shared-api-key>'
 export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
+export ENABLER_AGENT_ID='<agent-id>'
 ```
 
 3. Fetch/refresh runtime credentials and write artifacts:
@@ -54,6 +55,9 @@ Ephemeral delegation flow (named agent -> delegate token -> exchange):
 ./enabler-creds exchange --delegate-token '<token>'
 # or one-step:
 ./enabler-creds bootstrap-ephemeral --scopes taskboard,messages --ttl-seconds 600
+# or explicit named -> ephemeral managed sessions:
+./enabler-creds session bootstrap-named --agent-id named-alice
+./enabler-creds session bootstrap-ephemeral --from-agent-id named-alice --agent-id eph-session-1
 ```
 
 5. For agents, launch MCP:
@@ -134,11 +138,14 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./enabler-mcp
 ```
 
-## Local Cache Model
+## Managed Session Model
 
-- Credentials cache: `.enabler/credentials.json` (or `--creds-cache` / `ENABLER_CREDS_CACHE`)
-- STS env files: `.enabler/sts.env`, `.enabler/sts-<set>.env`
-- Cognito env file: `.enabler/cognito.env`
+- Runtime tools are keyed by `ENABLER_AGENT_ID` / `--agent-id`.
+- Credentials are persisted in managed session storage (default):
+  - Linux: `~/.local/state/enabler/sessions/<agent-id>/session.json`
+  - macOS: `~/Library/Application Support/enabler/sessions/<agent-id>/session.json`
+- Artifacts are adjacent to session state:
+  - `sts.env`, `sts-<set>.env`, `cognito.env`
 
 ## Taskboard Output Modes
 
