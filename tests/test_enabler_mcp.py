@@ -59,7 +59,6 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "credentials.status",
         "credentials.ensure",
         "credentials.exec",
-        "context.set_agentid",
         "taskboard.exec",
         "messages.exec",
         "shortlinks.exec",
@@ -315,7 +314,7 @@ def test_stdio_startup_without_agent_id_exits_with_helpful_error() -> None:
     assert "missing agent id" in (err or "").lower()
 
 
-def test_context_set_agentid_switches_default_context(monkeypatch, tmp_path: Path) -> None:
+def test_credentials_exec_set_agentid_switches_default_context(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
     _session_cache(tmp_path, monkeypatch, agent_id="agent-b")
     mcp = EnablerMcp(agent_id="agent-a")
@@ -326,8 +325,8 @@ def test_context_set_agentid_switches_default_context(monkeypatch, tmp_path: Pat
             "id": 10,
             "method": "tools/call",
             "params": {
-                "name": "context.set_agentid",
-                "arguments": {"agentId": "agent-b"},
+                "name": "credentials.exec",
+                "arguments": {"action": "set_agentid", "args": {"agentId": "agent-b"}},
             },
         }
     )
@@ -350,7 +349,7 @@ def test_context_set_agentid_switches_default_context(monkeypatch, tmp_path: Pat
     assert status_payload["defaultAgentId"] == "agent-b"
 
 
-def test_context_set_agentid_rejects_missing_session(monkeypatch, tmp_path: Path) -> None:
+def test_credentials_exec_set_agentid_rejects_missing_session(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
     mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
@@ -359,8 +358,8 @@ def test_context_set_agentid_rejects_missing_session(monkeypatch, tmp_path: Path
             "id": 12,
             "method": "tools/call",
             "params": {
-                "name": "context.set_agentid",
-                "arguments": {"agentId": "missing-agent"},
+                "name": "credentials.exec",
+                "arguments": {"action": "set_agentid", "args": {"agentId": "missing-agent"}},
             },
         }
     )
@@ -394,7 +393,10 @@ def test_async_operations_pin_agentid_at_enqueue(monkeypatch, tmp_path: Path) ->
             "jsonrpc": "2.0",
             "id": 14,
             "method": "tools/call",
-            "params": {"name": "context.set_agentid", "arguments": {"agentId": "agent-b"}},
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {"action": "set_agentid", "args": {"agentId": "agent-b"}},
+            },
         }
     )
     assert isinstance(switch, dict)

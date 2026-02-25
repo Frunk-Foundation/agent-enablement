@@ -138,7 +138,7 @@ class EnablerMcp:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["bootstrap_ephemeral", "list_sessions"]},
+                        "action": {"type": "string", "enum": ["bootstrap_ephemeral", "list_sessions", "set_agentid"]},
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -228,21 +228,6 @@ class EnablerMcp:
                     "additionalProperties": False,
                 },
                 handler=self._tool_files_exec,
-            )
-        )
-        self._register(
-            ToolDef(
-                name="context.set_agentid",
-                description="Switch default runtime agent identity for subsequent tool calls.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "agentId": {"type": "string"},
-                    },
-                    "required": ["agentId"],
-                    "additionalProperties": False,
-                },
-                handler=self._tool_context_set_agentid,
             )
         )
         self._register(
@@ -479,6 +464,22 @@ class EnablerMcp:
         }
 
     def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "set_agentid":
+            new_agent_id = str(args.get("agentId") or "").strip()
+            if not new_agent_id:
+                raise UsageError("missing agentId")
+            trial_g = self._g_for_agent(new_agent_id)
+            _ = self._ensure_doc(g=trial_g)
+            with self._context_lock:
+                previous = self._default_agent_id
+                self._default_agent_id = new_agent_id
+            return {
+                "kind": "enabler.mcp.credentials.set-agentid.v1",
+                "previousAgentId": previous,
+                "agentId": new_agent_id,
+                "switchedAt": self._now_iso(),
+            }
+
         if action == "list_sessions":
             root = _artifact_root(g)
             sessions_root = root.parent
@@ -725,22 +726,6 @@ class EnablerMcp:
         if not isinstance(action_args, dict):
             action_args = {}
         return self._dispatch_files(action, action_args, g=g)
-
-    def _tool_context_set_agentid(self, args: dict[str, Any]) -> Any:
-        new_agent_id = str(args.get("agentId") or "").strip()
-        if not new_agent_id:
-            raise UsageError("missing agentId")
-        trial_g = self._g_for_agent(new_agent_id)
-        _ = self._ensure_doc(g=trial_g)
-        with self._context_lock:
-            previous = self._default_agent_id
-            self._default_agent_id = new_agent_id
-        return {
-            "kind": "enabler.mcp.context.set-agentid.v1",
-            "previousAgentId": previous,
-            "agentId": new_agent_id,
-            "switchedAt": self._now_iso(),
-        }
 
     def _tool_credentials_exec(self, args: dict[str, Any]) -> Any:
         g = self._g_for_agent(self._current_agent_id())
