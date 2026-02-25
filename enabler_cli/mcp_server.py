@@ -62,6 +62,7 @@ class OperationRecord:
     operation_id: str
     tool_name: str
     action: str
+    agent_id: str
     state: str
     submitted_at: str
     started_at: str = ""
@@ -85,6 +86,8 @@ class EnablerMcp:
         self.g: GlobalOpts = _apply_global_env(ns)
         if not self.g.agent_id:
             raise UsageError(f"missing agent id (pass --agent-id or set {ENABLER_AGENT_ID})")
+        self._context_lock = threading.Lock()
+        self._default_agent_id = self.g.agent_id
         self.tools: dict[str, ToolDef] = {}
         self._operations: dict[str, OperationRecord] = {}
         self._operations_lock = threading.Lock()
@@ -204,6 +207,21 @@ class EnablerMcp:
         )
         self._register(
             ToolDef(
+                name="context.set_agentid",
+                description="Switch default runtime agent identity for subsequent tool calls.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "agentId": {"type": "string"},
+                    },
+                    "required": ["agentId"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_context_set_agentid,
+            )
+        )
+        self._register(
+            ToolDef(
                 name="ops.result",
                 description="Fetch status/result for an asynchronous operation.",
                 input_schema={
@@ -222,13 +240,27 @@ class EnablerMcp:
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _g_for_agent(self, agent_id: str) -> GlobalOpts:
+        return GlobalOpts(
+            stack=self.g.stack,
+            pretty=self.g.pretty,
+            quiet=self.g.quiet,
+            auto_refresh_creds=self.g.auto_refresh_creds,
+            agent_id=agent_id,
+        )
+
+    def _current_agent_id(self) -> str:
+        with self._context_lock:
+            return self._default_agent_id
+
     def _ensure_doc(
         self,
         *,
+        g: GlobalOpts,
         required_set: str | None = None,
         require_id_token: bool = False,
     ) -> dict[str, Any]:
-        doc = _resolve_runtime_credentials_doc(argparse.Namespace(), self.g)
+        doc = _resolve_runtime_credentials_doc(argparse.Namespace(), g)
         if required_set:
             _credential_set_doc(root_doc=doc, set_name=required_set)
         if require_id_token and not self._id_token_from_doc(doc):
@@ -282,11 +314,11 @@ class EnablerMcp:
 
         return {"code": code, "message": msg, "retryable": retryable}
 
-    def _cmd_json(self, func: Callable[[argparse.Namespace, GlobalOpts], int], **kwargs: Any) -> Any:
+    def _cmd_json(self, func: Callable[[argparse.Namespace, GlobalOpts], int], *, g: GlobalOpts, **kwargs: Any) -> Any:
         args = argparse.Namespace(**kwargs)
         out_buf = io.StringIO()
         with redirect_stdout(out_buf):
-            rc = int(func(args, self.g))
+            rc = int(func(args, g))
         if rc != 0:
             raise OpError(f"command failed with exit code {rc}")
         raw = out_buf.getvalue().strip()
@@ -298,24 +330,30 @@ class EnablerMcp:
             return {"text": raw}
 
     def _tool_credentials_status(self, _args: dict[str, Any]) -> Any:
-        doc = self._ensure_doc()
+        agent_id = self._current_agent_id()
+        g = self._g_for_agent(agent_id)
+        doc = self._ensure_doc(g=g)
         expires_at = _credentials_expires_at(doc)
         freshness, seconds_to_expiry = _credentials_freshness(expires_at)
         sets = doc.get("credentialSets") if isinstance(doc.get("credentialSets"), dict) else {}
         return {
             "kind": "enabler.creds.status.v1",
-            "agentId": self.g.agent_id,
+            "defaultAgentId": agent_id,
+            "agentId": agent_id,
             "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "expiresAt": expires_at,
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
             "credentialSets": sorted(list(sets.keys())),
-            "cachePath": str(_credentials_cache_file(self.g)),
+            "cachePath": str(_credentials_cache_file(g)),
         }
 
     def _tool_credentials_ensure(self, args: dict[str, Any]) -> Any:
+        agent_id = self._current_agent_id()
+        g = self._g_for_agent(agent_id)
         set_name = str(args.get("set") or "").strip()
         require_id_token = bool(args.get("requireIdToken", False))
         doc = self._ensure_doc(
+            g=g,
             required_set=set_name if set_name else None,
             require_id_token=require_id_token,
         )
@@ -327,21 +365,22 @@ class EnablerMcp:
         freshness, seconds_to_expiry = _credentials_freshness(expires_at)
         return {
             "kind": "enabler.creds.ensure.v1",
-            "agentId": self.g.agent_id,
+            "agentId": agent_id,
             "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "set": set_name or "agentEnablement",
             "expiration": process.get("Expiration", ""),
             "ready": True,
-            "artifactRoot": str(_artifact_root(self.g)),
+            "artifactRoot": str(_artifact_root(g)),
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
         }
 
-    def _dispatch_taskboard(self, action: str, args: dict[str, Any]) -> Any:
+    def _dispatch_taskboard(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "create":
-            return self._cmd_json(cmd_taskboard_create, name=args.get("name"), json_output=True)
+            return self._cmd_json(cmd_taskboard_create, g=g, name=args.get("name"), json_output=True)
         if action == "add":
             return self._cmd_json(
                 cmd_taskboard_add,
+                g=g,
                 board_id=args.get("boardId"),
                 lines=args.get("lines") or [],
                 file=None,
@@ -350,6 +389,7 @@ class EnablerMcp:
         if action == "list":
             return self._cmd_json(
                 cmd_taskboard_list,
+                g=g,
                 board_id=args.get("boardId"),
                 search=None,
                 query=args.get("query"),
@@ -367,6 +407,7 @@ class EnablerMcp:
             }[action]
             return self._cmd_json(
                 func,
+                g=g,
                 board_id=args.get("boardId"),
                 target=None,
                 task_id=args.get("taskId"),
@@ -374,10 +415,11 @@ class EnablerMcp:
                 json_output=True,
             )
         if action == "status":
-            return self._cmd_json(cmd_taskboard_status, board_id=args.get("boardId"), json_output=True)
+            return self._cmd_json(cmd_taskboard_status, g=g, board_id=args.get("boardId"), json_output=True)
         if action == "audit":
             return self._cmd_json(
                 cmd_taskboard_audit,
+                g=g,
                 board_id=args.get("boardId"),
                 task_id=args.get("taskId"),
                 limit=args.get("limit"),
@@ -387,6 +429,7 @@ class EnablerMcp:
         if action == "my_activity":
             return self._cmd_json(
                 cmd_taskboard_my_activity,
+                g=g,
                 board_id=args.get("boardId"),
                 limit=args.get("limit"),
                 next_token=args.get("nextToken"),
@@ -394,12 +437,13 @@ class EnablerMcp:
             )
         raise UsageError(f"unknown taskboard action: {action}")
 
-    def _dispatch_messages(self, action: str, args: dict[str, Any]) -> Any:
+    def _dispatch_messages(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "send":
             msg_json = args.get("messageJson")
             meta_json = args.get("metaJson")
             return self._cmd_json(
                 cmd_messages_send,
+                g=g,
                 to=args.get("to"),
                 text=args.get("text"),
                 message_json=json.dumps(msg_json) if isinstance(msg_json, dict) else None,
@@ -410,6 +454,7 @@ class EnablerMcp:
         if action == "recv":
             return self._cmd_json(
                 cmd_messages_recv,
+                g=g,
                 queue_url=args.get("queueUrl"),
                 max_number=str(args.get("maxNumber", "1")),
                 wait_seconds=str(args.get("waitSeconds", "10")),
@@ -419,29 +464,32 @@ class EnablerMcp:
         if action == "ack":
             return self._cmd_json(
                 cmd_messages_ack,
+                g=g,
                 ack_token=args.get("ackToken"),
                 receipt_handle=args.get("receiptHandle"),
                 queue_url=args.get("queueUrl"),
             )
         raise UsageError(f"unknown messages action: {action}")
 
-    def _dispatch_shortlinks(self, action: str, args: dict[str, Any]) -> Any:
+    def _dispatch_shortlinks(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "create":
             return self._cmd_json(
                 cmd_shortlinks_create,
+                g=g,
                 target_url=args.get("targetUrl"),
                 alias=args.get("alias"),
                 json_output=True,
             )
         if action == "resolve_url":
-            out = self._cmd_json(cmd_shortlinks_resolve_url, code=args.get("code"))
+            out = self._cmd_json(cmd_shortlinks_resolve_url, g=g, code=args.get("code"))
             return {"url": str(out.get("text") or "").strip()}
         raise UsageError(f"unknown shortlinks action: {action}")
 
-    def _dispatch_files(self, action: str, args: dict[str, Any]) -> Any:
+    def _dispatch_files(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "share":
             return self._cmd_json(
                 cmd_files_share,
+                g=g,
                 file_path=args.get("filePath"),
                 name=args.get("name"),
                 json_output=True,
@@ -449,32 +497,52 @@ class EnablerMcp:
         raise UsageError(f"unknown files action: {action}")
 
     def _tool_taskboard_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._current_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
             action_args = {}
-        return self._dispatch_taskboard(action, action_args)
+        return self._dispatch_taskboard(action, action_args, g=g)
 
     def _tool_messages_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._current_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
             action_args = {}
-        return self._dispatch_messages(action, action_args)
+        return self._dispatch_messages(action, action_args, g=g)
 
     def _tool_shortlinks_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._current_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
             action_args = {}
-        return self._dispatch_shortlinks(action, action_args)
+        return self._dispatch_shortlinks(action, action_args, g=g)
 
     def _tool_files_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._current_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
             action_args = {}
-        return self._dispatch_files(action, action_args)
+        return self._dispatch_files(action, action_args, g=g)
+
+    def _tool_context_set_agentid(self, args: dict[str, Any]) -> Any:
+        new_agent_id = str(args.get("agentId") or "").strip()
+        if not new_agent_id:
+            raise UsageError("missing agentId")
+        trial_g = self._g_for_agent(new_agent_id)
+        _ = self._ensure_doc(g=trial_g)
+        with self._context_lock:
+            previous = self._default_agent_id
+            self._default_agent_id = new_agent_id
+        return {
+            "kind": "enabler.mcp.context.set-agentid.v1",
+            "previousAgentId": previous,
+            "agentId": new_agent_id,
+            "switchedAt": self._now_iso(),
+        }
 
     def _tool_ops_result(self, args: dict[str, Any]) -> Any:
         op_id = str(args.get("operationId") or "").strip()
@@ -489,6 +557,7 @@ class EnablerMcp:
             "operationId": record.operation_id,
             "tool": record.tool_name,
             "action": record.action,
+            "agentId": record.agent_id,
             "state": record.state,
             "submittedAt": record.submitted_at,
             "startedAt": record.started_at,
@@ -512,9 +581,33 @@ class EnablerMcp:
             return None, action == "create"
         return None, False
 
-    def _execute_tool_now(self, tool: ToolDef, arguments: dict[str, Any]) -> Any:
+    def _execute_tool_now(self, tool: ToolDef, arguments: dict[str, Any], *, g: GlobalOpts) -> Any:
         required_set, require_id_token = self._auth_requirements(tool.name, arguments)
-        self._ensure_doc(required_set=required_set, require_id_token=require_id_token)
+        self._ensure_doc(g=g, required_set=required_set, require_id_token=require_id_token)
+        if tool.name == "taskboard.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_taskboard(action, action_args, g=g)
+        if tool.name == "messages.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_messages(action, action_args, g=g)
+        if tool.name == "shortlinks.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_shortlinks(action, action_args, g=g)
+        if tool.name == "files.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_files(action, action_args, g=g)
         return tool.handler(arguments)
 
     def _operation_worker_loop(self) -> None:
@@ -527,7 +620,9 @@ class EnablerMcp:
                         continue
                     rec.state = "running"
                     rec.started_at = self._now_iso()
-                result = self._execute_tool_now(tool, arguments)
+                assert rec is not None
+                g = self._g_for_agent(rec.agent_id)
+                result = self._execute_tool_now(tool, arguments, g=g)
                 with self._operations_lock:
                     rec = self._operations.get(op_id)
                     if rec is None:
@@ -550,10 +645,12 @@ class EnablerMcp:
     def _enqueue_operation(self, tool: ToolDef, arguments: dict[str, Any]) -> dict[str, Any]:
         op_id = uuid.uuid4().hex
         action = str(arguments.get("action") or "").strip()
+        agent_id = self._current_agent_id()
         rec = OperationRecord(
             operation_id=op_id,
             tool_name=tool.name,
             action=action,
+            agent_id=agent_id,
             state="queued",
             submitted_at=self._now_iso(),
         )
@@ -563,6 +660,7 @@ class EnablerMcp:
         return {
             "kind": "enabler.mcp.operation.accepted.v1",
             "operationId": op_id,
+            "agentId": agent_id,
             "state": "queued",
             "submittedAt": rec.submitted_at,
         }
@@ -612,7 +710,11 @@ class EnablerMcp:
                 if wants_async and name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "files.exec"}:
                     result = self._enqueue_operation(tool, arguments)
                 else:
-                    result = self._execute_tool_now(tool, arguments)
+                    result = self._execute_tool_now(
+                        tool,
+                        arguments,
+                        g=self._g_for_agent(self._current_agent_id()),
+                    )
             except (UsageError, OpError, ValueError) as e:
                 info = self._error_info(e)
                 return self._error(req_id, -32001, info["message"], data=info)

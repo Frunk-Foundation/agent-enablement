@@ -56,6 +56,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
     assert names == {
         "credentials.status",
         "credentials.ensure",
+        "context.set_agentid",
         "taskboard.exec",
         "messages.exec",
         "shortlinks.exec",
@@ -309,3 +310,110 @@ def test_stdio_startup_without_agent_id_exits_with_helpful_error() -> None:
     _out, err = proc.communicate(timeout=3)
     assert proc.returncode == 1
     assert "missing agent id" in (err or "").lower()
+
+
+def test_context_set_agentid_switches_default_context(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-b")
+    mcp = EnablerMcp(agent_id="agent-a")
+
+    switch = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "context.set_agentid",
+                "arguments": {"agentId": "agent-b"},
+            },
+        }
+    )
+    assert isinstance(switch, dict)
+    payload = json.loads(switch["result"]["content"][0]["text"])
+    assert payload["agentId"] == "agent-b"
+    assert payload["previousAgentId"] == "agent-a"
+
+    status = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {"name": "credentials.status", "arguments": {}},
+        }
+    )
+    assert isinstance(status, dict)
+    status_payload = json.loads(status["result"]["content"][0]["text"])
+    assert status_payload["agentId"] == "agent-b"
+    assert status_payload["defaultAgentId"] == "agent-b"
+
+
+def test_context_set_agentid_rejects_missing_session(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "context.set_agentid",
+                "arguments": {"agentId": "missing-agent"},
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    assert resp["error"]["data"]["code"] in {"CREDENTIALS_UNAVAILABLE", "MISSING_FALLBACK_AUTH_INPUTS"}
+
+
+def test_async_operations_pin_agentid_at_enqueue(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-b")
+    mcp = EnablerMcp(agent_id="agent-a")
+
+    def _fake_recv(_args, g):
+        print(json.dumps({"kind": "enabler.messages.recv.v1", "agentIdSeen": g.agent_id, "messages": []}))
+        return 0
+
+    monkeypatch.setattr("enabler_cli.mcp_server.cmd_messages_recv", _fake_recv)
+    submit = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {"name": "messages.exec", "arguments": {"action": "recv", "args": {}, "async": True}},
+        }
+    )
+    assert isinstance(submit, dict)
+    op_id = json.loads(submit["result"]["content"][0]["text"])["operationId"]
+
+    switch = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": {"name": "context.set_agentid", "arguments": {"agentId": "agent-b"}},
+        }
+    )
+    assert isinstance(switch, dict)
+
+    result_payload = None
+    for _ in range(30):
+        poll = mcp.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 15,
+                "method": "tools/call",
+                "params": {"name": "ops.result", "arguments": {"operationId": op_id}},
+            }
+        )
+        assert isinstance(poll, dict)
+        if "result" not in poll:
+            continue
+        result_payload = json.loads(poll["result"]["content"][0]["text"])
+        if result_payload["state"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+    assert isinstance(result_payload, dict)
+    assert result_payload["state"] == "succeeded"
+    assert result_payload["agentId"] == "agent-a"
+    assert result_payload["result"]["agentIdSeen"] == "agent-a"

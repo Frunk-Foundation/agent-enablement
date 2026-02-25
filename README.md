@@ -68,6 +68,11 @@ Ephemeral delegation flow (named agent -> delegate token -> exchange):
 
 `./enabler-mcp` uses newline-delimited JSON-RPC over stdio (MCP transport). It does not use `Content-Length` framing.
 
+Runtime identity switching is supported without restart via MCP tool `context.set_agentid`:
+- Startup `--agent-id` remains the initial default context.
+- `context.set_agentid` changes default context for subsequent calls.
+- Async operations are pinned to the `agentId` active at enqueue time.
+
 ## Credentials Output Modes
 
 - Default: human-readable artifact locations + freshness status.
@@ -126,6 +131,7 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 ## Shortlinks Output Modes
 
 - Exposed through `enabler-mcp` tools:
+  - `context.set_agentid` (switch default runtime identity)
   - `shortlinks.exec` (`action=create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
 
@@ -160,6 +166,7 @@ args = ["--agent-id", "jay"]
 ## Taskboard Output Modes
 
 - Exposed through `enabler-mcp` tools:
+  - `context.set_agentid` (switch default runtime identity)
   - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=send|recv|ack`)
   - `files.exec` (`action=share`)
