@@ -264,3 +264,48 @@ def test_stdio_newline_transport_initialize_and_tools_list() -> None:
     finally:
         proc.terminate()
         proc.wait(timeout=3)
+
+
+def test_stdio_initialize_from_non_repo_cwd_via_absolute_launcher() -> None:
+    repo_root = str(Path(__file__).resolve().parents[1])
+    launcher = str((Path(repo_root) / "enabler-mcp").resolve())
+    env = dict(os.environ)
+    env["ENABLER_AGENT_ID"] = "agent-a"
+    proc = subprocess.Popen(
+        [launcher],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd="/Users/jay",
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n")
+        proc.stdin.flush()
+
+        ready, _, _ = select.select([proc.stdout], [], [], 3.0)
+        assert ready, "timeout waiting for initialize response from non-repo cwd"
+        init_resp = json.loads(proc.stdout.readline())
+        assert init_resp["id"] == 1
+        assert init_resp["result"]["serverInfo"]["name"] == "enabler-mcp"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+def test_stdio_startup_without_agent_id_exits_with_helpful_error() -> None:
+    proc = subprocess.Popen(
+        ["./enabler-mcp"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={k: v for k, v in os.environ.items() if k != "ENABLER_AGENT_ID"},
+    )
+    _out, err = proc.communicate(timeout=3)
+    assert proc.returncode == 1
+    assert "missing agent id" in (err or "").lower()

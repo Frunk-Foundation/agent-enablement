@@ -138,6 +138,16 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./enabler-mcp
 ```
 
+- Codex MCP config must pass a fixed runtime identity:
+
+```toml
+[mcp_servers.agent-enablement]
+command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
+args = ["--agent-id", "jay"]
+```
+
+- Launcher is cwd-independent; absolute command invocation works as long as `--agent-id` (or `ENABLER_AGENT_ID`) is provided.
+
 ## Managed Session Model
 
 - Runtime tools are keyed by `ENABLER_AGENT_ID` / `--agent-id`.
