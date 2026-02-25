@@ -150,19 +150,6 @@ curl-credentials-verbose:
 	API_KEY="$(just api-key | jq -r '.value')"; \
 	curl -i -sS -u '{{username}}:{{password}}' -H "x-api-key: $API_KEY" -X POST "$ENDPOINT"
 
-# Build the link-first enablement pack under enablement_pack/dist/<version>
-# Usage: just build-enablement-pack [base_url]
-build-enablement-pack base_url="https://example.invalid/agent-enablement/latest":
-	./enabler-admin pack-build --base-url "{{base_url}}"
-
-# Publish an enablement pack version to S3 and update latest pointers.
-# Usage: just publish-enablement-pack <bucket> <version> [prefix]
-publish-enablement-pack bucket version prefix="agent-enablement":
-	AWS_PROFILE={{profile}} AWS_REGION={{region}} ./enabler-admin pack-publish \
-		--bucket "{{bucket}}" \
-		--version "{{version}}" \
-		--prefix "{{prefix}}"
-
 # Unit tests (CDK/jsii imports require a writable HOME; system tests are skipped by default)
 test:
 	@mkdir -p /tmp/codex-home
@@ -171,3 +158,8 @@ test:
 # System tests (runs against a deployed stack; requires real AWS access)
 test-system:
 	@RUN_SYSTEM=1 AWS_PROFILE={{profile}} AWS_REGION={{region}} STACK={{stack}} .venv/bin/python -m pytest -q tests/system
+
+# Fast repository hygiene check (tracked files only).
+hygiene:
+	@mkdir -p /tmp/codex-home
+	@HOME=/tmp/codex-home .venv/bin/python -m pytest -q tests/test_repo_hygiene_smoke.py

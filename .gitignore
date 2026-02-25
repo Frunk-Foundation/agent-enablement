@@ -3,8 +3,6 @@ __pycache__/
 *.pyc
 cdk.out/
 .pytest_cache/
-enablement_pack/dist/
-enablement_pack/__pycache__/
 .DS_Store
 
 # macOS / JSII cache
@@ -13,6 +11,7 @@ Library/
 # Local env files
 .env
 .env.enabler
+.env.workshop.local
 
 # Local scratch (may contain credentials)
 creds_test.json

@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 import click
 
-from enabler_cli.cli import (
+from enabler_cli.apps.agent_admin_cli import (
     GlobalOpts,
     OpError,
     UsageError,
@@ -23,7 +23,6 @@ from enabler_cli.cli import (
     admin_app,
     app,
     cmd_ssm_api_key,
-    cmd_pack_publish,
     cmd_stack_output,
     main_agent,
     main_admin,
@@ -169,15 +168,15 @@ def test_aws_profile_region_does_not_backfill_from_aws_default_env(monkeypatch):
 
 def test_main_loads_dotenv_with_package_defaults(monkeypatch):
     calls: list[tuple[tuple, dict]] = []
-    monkeypatch.setattr("enabler_cli.cli.load_dotenv", lambda *a, **k: calls.append((a, k)) or True)
-    monkeypatch.setattr("enabler_cli.cli.app", lambda *a, **k: None)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.load_dotenv", lambda *a, **k: calls.append((a, k)) or True)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.app", lambda *a, **k: None)
     assert main([]) == 0
     assert calls == [((), {})]
 
 
 def test_main_returns_app_exit_code(monkeypatch):
-    monkeypatch.setattr("enabler_cli.cli.load_dotenv", lambda *a, **k: True)
-    monkeypatch.setattr("enabler_cli.cli.app", lambda *a, **k: 2)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.load_dotenv", lambda *a, **k: True)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.app", lambda *a, **k: 2)
     assert main(["files", "share"]) == 2
 
 
@@ -206,7 +205,7 @@ def test_admin_agent_help_lists_decommission():
 
 
 def test_main_agent_runtime_usage_error_prints_command_help(capsys, monkeypatch):
-    monkeypatch.setattr("enabler_cli.cli.load_dotenv", lambda *a, **k: True)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.load_dotenv", lambda *a, **k: True)
     monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
     monkeypatch.delenv("ENABLER_COGNITO_PASSWORD", raising=False)
     monkeypatch.delenv("ENABLER_CREDENTIALS_ENDPOINT", raising=False)
@@ -226,7 +225,7 @@ def test_agent_group_removed_from_agent_cli():
 
 
 def test_main_agent_runtime_usage_error_prints_command_help_top_level(capsys, monkeypatch):
-    monkeypatch.setattr("enabler_cli.cli.load_dotenv", lambda *a, **k: True)
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.load_dotenv", lambda *a, **k: True)
     monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
     monkeypatch.delenv("ENABLER_COGNITO_PASSWORD", raising=False)
     monkeypatch.delenv("ENABLER_CREDENTIALS_ENDPOINT", raising=False)
@@ -327,34 +326,16 @@ def test_admin_help_banner_uses_stack_env_and_flag_sources():
     assert "Stack: StackFromFlag (source=--stack)" in _plain(flag_result.output)
 
 
-def test_pack_build_help_banner_includes_bucket_line_after_stack():
-    runner = CliRunner()
-    result = runner.invoke(admin_app, ["pack-build", "--help"])
-    assert result.exit_code == 0
-    assert "Credentials:" in result.output
-    assert "Stack:" in result.output
-    assert "Bucket:" in result.output
-    assert "source=stack output CommsSharedBucketName" in result.output
-    assert result.output.index("Credentials:") < result.output.index("Stack:")
-    assert result.output.index("Stack:") < result.output.index("Bucket:")
-
-
-def test_admin_help_lists_pack_commands_at_bottom():
+def test_admin_help_lists_core_commands():
     runner = CliRunner()
     result = runner.invoke(admin_app, ["--help"])
     assert result.exit_code == 0
     output = _plain(result.output)
     stack_line = "│ stack-output"
     agent_line = "│ agent"
-    build_line = "│ pack-build"
-    publish_line = "│ pack-publish"
     assert stack_line in output
     assert agent_line in output
-    assert build_line in output
-    assert publish_line in output
     assert output.index(stack_line) < output.index(agent_line)
-    assert output.index(agent_line) < output.index(build_line)
-    assert output.index(build_line) < output.index(publish_line)
 
 
 def test_cognito_help_banner_includes_pool_id_line_after_stack():
@@ -499,73 +480,3 @@ def test_cmd_stack_output_with_missing_key_errors(monkeypatch):
     with pytest.raises(OpError, match="output key not found: Missing"):
         cmd_stack_output(args, g)
 
-
-def test_cmd_pack_publish_uses_explicit_bucket_without_stack_lookup(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr("enabler_cli.cli._aws_profile_region_from_env", lambda: ("dev", "us-east-2"))
-    monkeypatch.setattr(
-        "enabler_cli.cli._account_session",
-        lambda: (_ for _ in ()).throw(AssertionError("unexpected account session lookup")),
-    )
-    monkeypatch.setattr(
-        "enabler_cli.cli._require_stack_output",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected stack output lookup")),
-    )
-
-    called: dict[str, object] = {}
-
-    def _fake_publish(*, bucket, version, dist_root, prefix, dry_run):
-        called.update(
-            {
-                "bucket": bucket,
-                "version": version,
-                "dist_root": dist_root,
-                "prefix": prefix,
-                "dry_run": dry_run,
-            }
-        )
-        return {"ok": True, "bucket": bucket}
-
-    monkeypatch.setattr("enablement_pack.publish_pack.publish", _fake_publish)
-
-    args = argparse.Namespace(
-        bucket="explicit-bucket",
-        version="v1",
-        dist_root=str(tmp_path),
-        prefix="agent-enablement",
-        dry_run=False,
-    )
-    g = GlobalOpts(stack="AgentEnablementStack", pretty=False, quiet=False)
-    assert cmd_pack_publish(args, g) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["bucket"] == "explicit-bucket"
-    assert called["bucket"] == "explicit-bucket"
-
-
-def test_cmd_pack_publish_falls_back_to_comms_bucket_stack_output(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr("enabler_cli.cli._aws_profile_region_from_env", lambda: ("dev", "us-east-2"))
-    monkeypatch.setattr("enabler_cli.cli._account_session", lambda: object())
-    monkeypatch.setattr(
-        "enabler_cli.cli._require_stack_output",
-        lambda _session, *, stack, key: "stack-comms-bucket",
-    )
-
-    called: dict[str, object] = {}
-
-    def _fake_publish(*, bucket, version, dist_root, prefix, dry_run):
-        called["bucket"] = bucket
-        return {"ok": True, "bucket": bucket}
-
-    monkeypatch.setattr("enablement_pack.publish_pack.publish", _fake_publish)
-
-    args = argparse.Namespace(
-        bucket=None,
-        version="v1",
-        dist_root=str(tmp_path),
-        prefix="agent-enablement",
-        dry_run=True,
-    )
-    g = GlobalOpts(stack="AgentEnablementStack", pretty=False, quiet=False)
-    assert cmd_pack_publish(args, g) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["bucket"] == "stack-comms-bucket"
-    assert called["bucket"] == "stack-comms-bucket"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export ENABLER_CLI_ROLE=agent
+if [[ -x "${SCRIPT_DIR}/.venv/bin/python" ]]; then
+  exec "${SCRIPT_DIR}/.venv/bin/python" -m enabler_cli.mcp_main "$@"
+fi
+
+export PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m enabler_cli.mcp_main "$@"
