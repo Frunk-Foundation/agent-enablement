@@ -57,7 +57,6 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
     names = {t["name"] for t in tools}
     assert names == {
         "credentials.status",
-        "credentials.ensure",
         "credentials.exec",
         "taskboard.exec",
         "messages.exec",
@@ -84,6 +83,33 @@ def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
     text = resp["result"]["content"][0]["text"]
     parsed = json.loads(text)
     assert parsed["kind"] == "enabler.creds.status.v1"
+
+
+def test_credentials_exec_ensure(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    mcp = EnablerMcp(agent_id="agent-a")
+
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {
+                    "action": "ensure",
+                    "args": {"set": "agentEnablement", "requireIdToken": True},
+                },
+            },
+        }
+    )
+
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["kind"] == "enabler.creds.ensure.v1"
+    assert parsed["agentId"] == "agent-a"
+    assert parsed["set"] == "agentEnablement"
+    assert parsed["ready"] is True
 
 
 def test_taskboard_tool_requires_cognito_id_token(monkeypatch, tmp_path: Path) -> None:

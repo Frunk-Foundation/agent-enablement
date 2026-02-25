@@ -118,27 +118,15 @@ class EnablerMcp:
         )
         self._register(
             ToolDef(
-                name="credentials.ensure",
-                description="Ensure credentials are present/fresh and return readiness metadata.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "set": {"type": "string"},
-                        "requireIdToken": {"type": "boolean"},
-                    },
-                    "additionalProperties": False,
-                },
-                handler=self._tool_credentials_ensure,
-            )
-        )
-        self._register(
-            ToolDef(
                 name="credentials.exec",
                 description="Execute credential lifecycle actions.",
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["bootstrap_ephemeral", "list_sessions", "set_agentid"]},
+                        "action": {
+                            "type": "string",
+                            "enum": ["bootstrap_ephemeral", "ensure", "list_sessions", "set_agentid"],
+                        },
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -436,9 +424,8 @@ class EnablerMcp:
             "cachePath": str(_credentials_cache_file(g)),
         }
 
-    def _tool_credentials_ensure(self, args: dict[str, Any]) -> Any:
-        agent_id = self._current_agent_id()
-        g = self._g_for_agent(agent_id)
+    def _credentials_ensure_payload(self, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        agent_id = g.agent_id
         set_name = str(args.get("set") or "").strip()
         require_id_token = bool(args.get("requireIdToken", False))
         doc = self._ensure_doc(
@@ -464,6 +451,9 @@ class EnablerMcp:
         }
 
     def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "ensure":
+            return self._credentials_ensure_payload(args, g=g)
+
         if action == "set_agentid":
             new_agent_id = str(args.get("agentId") or "").strip()
             if not new_agent_id:

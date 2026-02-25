@@ -74,6 +74,7 @@ Runtime identity switching is supported without restart via MCP tool `credential
 - Async operations are pinned to the `agentId` active at enqueue time.
 
 Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
+- `action=ensure`: ensure credentials are present/fresh and return readiness metadata.
 - `action=list_sessions`: enumerate managed local agent sessions.
 - `action=set_agentid`: switch default runtime identity to another existing local session.
 - `action=bootstrap_ephemeral`: mint delegate token from current named context and exchange into a target ephemeral session.
@@ -136,7 +137,7 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 ## Shortlinks Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=list_sessions|set_agentid|bootstrap_ephemeral`)
+  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|bootstrap_ephemeral`)
   - `shortlinks.exec` (`action=create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
 
@@ -171,7 +172,7 @@ args = ["--agent-id", "jay"]
 ## Taskboard Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=list_sessions|set_agentid|bootstrap_ephemeral`)
+  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|bootstrap_ephemeral`)
   - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=send|recv|ack`)
   - `files.exec` (`action=share`)
