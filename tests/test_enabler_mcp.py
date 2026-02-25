@@ -15,6 +15,8 @@ def _seed_cache(path: Path) -> None:
     exp = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     payload = {
         "expiresAt": exp,
+        "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
+        "principal": {"sub": "sub-1", "username": "agent-a", "profileType": "named"},
         "credentialSets": {
             "agentEnablement": {
                 "credentials": {
@@ -56,6 +58,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
     assert names == {
         "credentials.status",
         "credentials.ensure",
+        "credentials.exec",
         "context.set_agentid",
         "taskboard.exec",
         "messages.exec",
@@ -417,3 +420,131 @@ def test_async_operations_pin_agentid_at_enqueue(monkeypatch, tmp_path: Path) ->
     assert result_payload["state"] == "succeeded"
     assert result_payload["agentId"] == "agent-a"
     assert result_payload["result"]["agentIdSeen"] == "agent-a"
+
+
+def test_credentials_exec_list_sessions(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-b")
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {"name": "credentials.exec", "arguments": {"action": "list_sessions", "args": {}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    ids = {item["agentId"] for item in parsed["sessions"]}
+    assert {"agent-a", "agent-b"}.issubset(ids)
+
+
+def test_credentials_exec_bootstrap_ephemeral(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    monkeypatch.setenv("ENABLER_API_KEY", "api-key")
+    calls: list[str] = []
+
+    def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
+        del headers, timeout_seconds
+        calls.append(url)
+        if url.endswith("/v1/delegate-token"):
+            assert json.loads(body.decode("utf-8"))["ttlSeconds"] == 600
+            return (
+                200,
+                {},
+                json.dumps(
+                    {
+                        "kind": "agent-enablement.delegate-token.v1",
+                        "delegateToken": "a.b.c",
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                        "scopes": ["taskboard", "messages"],
+                        "ephemeralUsername": "ephem-1",
+                        "ephemeralAgentId": "ephem-a1",
+                    }
+                ).encode("utf-8"),
+            )
+        if url.endswith("/v1/credentials/exchange"):
+            exp = "2099-01-01T00:00:00+00:00"
+            return (
+                200,
+                {},
+                json.dumps(
+                    {
+                        "kind": "agent-enablement.credentials.v2",
+                        "expiresAt": exp,
+                        "principal": {"sub": "sub-2", "username": "ephem-1", "profileType": "ephemeral"},
+                        "credentials": {
+                            "accessKeyId": "ASIA2",
+                            "secretAccessKey": "secret",
+                            "sessionToken": "token",
+                            "expiration": exp,
+                        },
+                        "credentialSets": {
+                            "agentEnablement": {
+                                "credentials": {
+                                    "accessKeyId": "ASIA2",
+                                    "secretAccessKey": "secret",
+                                    "sessionToken": "token",
+                                    "expiration": exp,
+                                },
+                                "references": {"awsRegion": "us-east-2"},
+                            }
+                        },
+                        "cognitoTokens": {
+                            "idToken": "a.b.c",
+                            "accessToken": "d.e.f",
+                            "refreshToken": "refresh",
+                        },
+                    }
+                ).encode("utf-8"),
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr("enabler_cli.mcp_server._http_post_json", _fake_post_json)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {
+                    "action": "bootstrap_ephemeral",
+                    "args": {"targetAgentId": "ephem-1", "switchToEphemeral": True},
+                },
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["targetAgentId"] == "ephem-1"
+    assert parsed["switched"] is True
+    assert parsed["currentDefaultAgentId"] == "ephem-1"
+    assert calls == [
+        "https://api.example.com/prod/v1/delegate-token",
+        "https://api.example.com/prod/v1/credentials/exchange",
+    ]
+
+
+def test_credentials_exec_bootstrap_ephemeral_requires_named(monkeypatch, tmp_path: Path) -> None:
+    cache = _session_cache(tmp_path, monkeypatch, agent_id="agent-e")
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    payload["principal"]["profileType"] = "ephemeral"
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("ENABLER_API_KEY", "api-key")
+    mcp = EnablerMcp(agent_id="agent-e")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {"action": "bootstrap_ephemeral", "args": {"targetAgentId": "ephem-2"}},
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    assert resp["error"]["data"]["message"].startswith("Only named agent profiles may mint delegate tokens")

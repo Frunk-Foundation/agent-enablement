@@ -73,6 +73,10 @@ Runtime identity switching is supported without restart via MCP tool `context.se
 - `context.set_agentid` changes default context for subsequent calls.
 - Async operations are pinned to the `agentId` active at enqueue time.
 
+Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
+- `action=list_sessions`: enumerate managed local agent sessions.
+- `action=bootstrap_ephemeral`: mint delegate token from current named context and exchange into a target ephemeral session.
+
 ## Credentials Output Modes
 
 - Default: human-readable artifact locations + freshness status.
@@ -131,6 +135,7 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 ## Shortlinks Output Modes
 
 - Exposed through `enabler-mcp` tools:
+  - `credentials.exec` (`action=list_sessions|bootstrap_ephemeral`)
   - `context.set_agentid` (switch default runtime identity)
   - `shortlinks.exec` (`action=create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
@@ -166,6 +171,7 @@ args = ["--agent-id", "jay"]
 ## Taskboard Output Modes
 
 - Exposed through `enabler-mcp` tools:
+  - `credentials.exec` (`action=list_sessions|bootstrap_ephemeral`)
   - `context.set_agentid` (switch default runtime identity)
   - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=send|recv|ack`)

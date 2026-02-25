@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import queue
 import sys
 import threading
@@ -11,6 +12,7 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlparse, urlunparse
 
 from . import __version__
 from .runtime_core import (
@@ -23,9 +25,13 @@ from .runtime_core import (
     _credentials_cache_file,
     _credentials_expires_at,
     _credentials_freshness,
+    _credentials_location_manifest,
     _namespace,
     _resolve_runtime_credentials_doc,
     _select_runtime_agent_doc,
+    _write_cognito_env_file_from_doc,
+    _write_credentials_cache_from_text,
+    _write_sts_env_files_from_doc,
     cmd_files_share,
     cmd_messages_ack,
     cmd_messages_recv,
@@ -43,6 +49,8 @@ from .runtime_core import (
     cmd_taskboard_status,
     cmd_taskboard_unclaim,
 )
+from .apps.agent_admin_cli import _http_post_json
+from .cli_shared import ENABLER_API_KEY
 from .cli_shared import GlobalOpts
 from .cli_shared import ENABLER_AGENT_ID
 
@@ -121,6 +129,23 @@ class EnablerMcp:
                     "additionalProperties": False,
                 },
                 handler=self._tool_credentials_ensure,
+            )
+        )
+        self._register(
+            ToolDef(
+                name="credentials.exec",
+                description="Execute credential lifecycle actions.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["bootstrap_ephemeral", "list_sessions"]},
+                        "args": {"type": "object"},
+                        "async": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_credentials_exec,
             )
         )
         self._register(
@@ -283,6 +308,85 @@ class EnablerMcp:
                     return tok
         return ""
 
+    def _runtime_credentials_endpoint(self, doc: dict[str, Any]) -> str:
+        auth = doc.get("auth")
+        if isinstance(auth, dict):
+            endpoint = str(auth.get("credentialsEndpoint") or "").strip()
+            if endpoint:
+                return endpoint
+        refs = doc.get("references")
+        if isinstance(refs, dict):
+            for key in ("credentials", "auth"):
+                item = refs.get(key)
+                if not isinstance(item, dict):
+                    continue
+                endpoint = str(item.get("invokeUrl") or item.get("endpoint") or "").strip()
+                if endpoint:
+                    return endpoint
+        return ""
+
+    def _derive_endpoint(self, credentials_endpoint: str, *, suffix: str) -> str:
+        raw = str(credentials_endpoint or "").strip()
+        if not raw:
+            raise UsageError("missing credentials endpoint in cached auth metadata")
+        parsed = urlparse(raw)
+        path = str(parsed.path or "").rstrip("/")
+        if not path.endswith("/v1/credentials"):
+            raise UsageError(
+                "cannot derive endpoint from credentials endpoint "
+                f"{raw!r} (expected path ending with /v1/credentials)"
+            )
+        target_path = path[: -len("/v1/credentials")] + suffix
+        return urlunparse(parsed._replace(path=target_path))
+
+    def _json_obj_or_error(self, *, raw: bytes, label: str) -> dict[str, Any]:
+        text = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(text)
+        except Exception as e:
+            raise OpError(f"invalid JSON from {label}: {e}; body={text}") from e
+        if not isinstance(parsed, dict):
+            raise OpError(f"invalid JSON from {label}: expected object")
+        return parsed
+
+    def _post_json_checked(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        body_obj: dict[str, Any] | None = None,
+        label: str,
+    ) -> dict[str, Any]:
+        body = b""
+        if isinstance(body_obj, dict):
+            body = json.dumps(body_obj, separators=(",", ":")).encode("utf-8")
+        status, _hdrs, raw = _http_post_json(url=url, headers=headers, body=body)
+        if status < 200 or status >= 300:
+            text = raw.decode("utf-8", errors="replace")
+            raise OpError(f"{label} failed: status={status} body={text}")
+        return self._json_obj_or_error(raw=raw, label=label)
+
+    def _write_exchange_artifacts(self, *, g: GlobalOpts, response_obj: dict[str, Any]) -> dict[str, Any]:
+        raw_text = json.dumps(response_obj, separators=(",", ":"), sort_keys=True)
+        path = _write_credentials_cache_from_text(g=g, raw_text=raw_text)
+        sts_env_paths = _write_sts_env_files_from_doc(g=g, root_doc=response_obj)
+        cognito_env_path = str(_write_cognito_env_file_from_doc(g=g, root_doc=response_obj))
+        manifest = _credentials_location_manifest(
+            g=g,
+            doc=response_obj,
+            sts_env_paths=sts_env_paths,
+            cognito_env_path=cognito_env_path,
+        )
+        return {"cachePath": str(path), "manifest": manifest}
+
+    def _profile_type_from_doc(self, doc: dict[str, Any]) -> str:
+        principal = doc.get("principal")
+        if isinstance(principal, dict):
+            val = str(principal.get("profileType") or "").strip().lower()
+            if val:
+                return val
+        return "named"
+
     def _error_info(self, err: Exception) -> dict[str, Any]:
         msg = str(err).strip()
         lower = msg.lower()
@@ -373,6 +477,100 @@ class EnablerMcp:
             "artifactRoot": str(_artifact_root(g)),
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
         }
+
+    def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "list_sessions":
+            root = _artifact_root(g)
+            sessions_root = root.parent
+            sessions: list[dict[str, Any]] = []
+            if sessions_root.exists():
+                for session_dir in sorted([p for p in sessions_root.iterdir() if p.is_dir()]):
+                    session_file = session_dir / "session.json"
+                    if not session_file.exists():
+                        continue
+                    sessions.append(
+                        {
+                            "agentId": session_dir.name,
+                            "sessionPath": str(session_file.resolve()),
+                            "exists": True,
+                        }
+                    )
+            return {"kind": "enabler.mcp.credentials.sessions.v1", "sessions": sessions}
+
+        if action == "bootstrap_ephemeral":
+            source_doc = self._ensure_doc(g=g, require_id_token=True)
+            if self._profile_type_from_doc(source_doc) != "named":
+                raise UsageError("Only named agent profiles may mint delegate tokens")
+
+            api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+            if not api_key:
+                raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+
+            target_agent_id = str(args.get("targetAgentId") or "").strip()
+            if not target_agent_id:
+                raise UsageError("missing targetAgentId")
+            scopes_raw = args.get("scopes")
+            if isinstance(scopes_raw, list):
+                scopes = [str(v).strip() for v in scopes_raw if str(v).strip()]
+            else:
+                scopes = ["taskboard", "messages"]
+            ttl_seconds = int(args.get("ttlSeconds") or 600)
+            purpose = str(args.get("purpose") or "")
+            switch_to_ephemeral = bool(args.get("switchToEphemeral", False))
+
+            id_token = self._id_token_from_doc(source_doc)
+            if not id_token:
+                raise UsageError("cached credentials missing cognitoTokens.idToken")
+            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            delegate_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
+            exchange_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
+            delegate_resp = self._post_json_checked(
+                url=delegate_endpoint,
+                headers={
+                    "authorization": f"Bearer {id_token}",
+                    "content-type": "application/json",
+                },
+                body_obj={"scopes": scopes, "ttlSeconds": ttl_seconds, "purpose": purpose},
+                label="delegate token request",
+            )
+            delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
+            if not delegate_token:
+                raise OpError("delegate token response missing delegateToken")
+            exchange_resp = self._post_json_checked(
+                url=exchange_endpoint,
+                headers={
+                    "x-api-key": api_key,
+                    "authorization": f"Bearer {delegate_token}",
+                },
+                label="credentials exchange request",
+            )
+            target_g = self._g_for_agent(target_agent_id)
+            artifacts = self._write_exchange_artifacts(g=target_g, response_obj=exchange_resp)
+            switched = False
+            if switch_to_ephemeral:
+                with self._context_lock:
+                    self._default_agent_id = target_agent_id
+                switched = True
+            return {
+                "kind": "enabler.mcp.credentials.bootstrap-ephemeral.v1",
+                "fromAgentId": g.agent_id,
+                "targetAgentId": target_agent_id,
+                "delegate": {
+                    "expiresAt": delegate_resp.get("expiresAt"),
+                    "scopes": delegate_resp.get("scopes"),
+                    "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
+                    "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
+                },
+                "principal": exchange_resp.get("principal"),
+                "credentialSets": sorted(list((exchange_resp.get("credentialSets") or {}).keys()))
+                if isinstance(exchange_resp.get("credentialSets"), dict)
+                else [],
+                "switched": switched,
+                "currentDefaultAgentId": self._current_agent_id(),
+                **artifacts,
+            }
+
+        raise UsageError(f"unknown credentials action: {action}")
 
     def _dispatch_taskboard(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "create":
@@ -544,6 +742,14 @@ class EnablerMcp:
             "switchedAt": self._now_iso(),
         }
 
+    def _tool_credentials_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._current_agent_id())
+        action = str(args.get("action") or "").strip()
+        action_args = args.get("args")
+        if not isinstance(action_args, dict):
+            action_args = {}
+        return self._dispatch_credentials(action, action_args, g=g)
+
     def _tool_ops_result(self, args: dict[str, Any]) -> Any:
         op_id = str(args.get("operationId") or "").strip()
         if not op_id:
@@ -582,6 +788,12 @@ class EnablerMcp:
         return None, False
 
     def _execute_tool_now(self, tool: ToolDef, arguments: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if tool.name == "credentials.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_credentials(action, action_args, g=g)
         required_set, require_id_token = self._auth_requirements(tool.name, arguments)
         self._ensure_doc(g=g, required_set=required_set, require_id_token=require_id_token)
         if tool.name == "taskboard.exec":
@@ -707,7 +919,7 @@ class EnablerMcp:
 
             try:
                 wants_async = bool(arguments.get("async", False))
-                if wants_async and name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "files.exec"}:
+                if wants_async and name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "files.exec", "credentials.exec"}:
                     result = self._enqueue_operation(tool, arguments)
                 else:
                     result = self._execute_tool_now(
