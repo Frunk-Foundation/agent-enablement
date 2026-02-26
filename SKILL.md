@@ -62,7 +62,7 @@ just test
 ## Wish I Knew Earlier
 
 - MCP stdio framing here must be newline-delimited JSON-RPC. `Content-Length` framing causes Codex MCP startup timeout symptoms even when the server process is fast.
-- Delegation flow depends on cache persona: `delegate-token create` only works with a named-agent credential cache. After `exchange`, cache becomes ephemeral, so minting another delegate token fails until named credentials are restored (for example, refresh from named auth context).
+- Delegation uses short-code request/approve/redeem. Any named profile can approve a pending code; redeem is one-time and writes the target session cache/artifacts.
 - Agent-id session mode must derive credential paths from resolved `GlobalOpts.agent_id` (not only env). Otherwise helper flows that construct `GlobalOpts` directly will silently read/write the wrong session.
 - Codex MCP startup requires fixed identity wiring in config (`args = ["--agent-id","<id>"]`). Without it, startup fails immediately with `missing agent id`, which often appears as timeout in clients.
 - MCP runtime switching (`credentials.exec` + `action=set_agentid`) changes only the default context for future calls; async jobs must pin enqueue-time `agentId` to avoid identity drift.

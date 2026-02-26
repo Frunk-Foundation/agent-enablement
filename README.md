@@ -10,8 +10,10 @@ This repo provides an agent-first runtime flow with split credential and MCP sur
 ## API Surface
 
 - `POST /v1/credentials`: returns short-lived STS credentials and runtime references
-- `POST /v1/delegate-token`: named-agent mint of one-time delegate token (Cognito bearer)
-- `POST /v1/credentials/exchange`: delegate token exchange for ephemeral credentials
+- `POST /v1/delegation/requests`: create short-code delegation request (API key)
+- `POST /v1/delegation/approvals`: approve pending delegation request (Cognito bearer)
+- `POST /v1/delegation/redeem`: redeem approved request code for ephemeral credentials (API key)
+- `POST /v1/delegation/status`: fetch request status by code (API key)
 - `POST /v1/links`: creates shortlinks (Cognito bearer)
 - `GET /l/{code}`: resolves shortlinks
 - `/v1/taskboard/*`: taskboard operations (Cognito bearer)
@@ -48,16 +50,15 @@ export ENABLER_AGENT_ID='<agent-id>'
 ./enabler-creds credential-process --set agentEnablement
 ```
 
-Ephemeral delegation flow (named agent -> delegate token -> exchange):
+Ephemeral delegation flow (request -> approve -> redeem):
 
 ```bash
-./enabler-creds delegate-token create --scopes taskboard,messages --ttl-seconds 600 --purpose "session bootstrap"
-./enabler-creds exchange --delegate-token '<token>'
-# or one-step:
-./enabler-creds bootstrap-ephemeral --scopes taskboard,messages --ttl-seconds 600
-# or explicit named -> ephemeral managed sessions:
-./enabler-creds session bootstrap-named --agent-id named-alice
-./enabler-creds session bootstrap-ephemeral --from-agent-id named-alice --agent-id eph-session-1
+# requester (can be an ephemeral bootstrap client)
+./enabler-creds delegation request --scopes taskboard,messages --ttl-seconds 600 --purpose "session bootstrap"
+# approver (named profile only)
+./enabler-creds delegation approve --request-code '<requestCode>'
+# requester redeems and writes local session artifacts
+./enabler-creds delegation redeem --request-code '<requestCode>'
 ```
 
 5. For agents, launch MCP:
@@ -77,7 +78,10 @@ Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
 - `action=ensure`: ensure credentials are present/fresh and return readiness metadata.
 - `action=list_sessions`: enumerate managed local agent sessions.
 - `action=set_agentid`: switch default runtime identity to another existing local session.
-- `action=bootstrap_ephemeral`: mint delegate token from current named context and exchange into a target ephemeral session.
+- `action=delegation_request`: create short-code delegation request.
+- `action=delegation_approve`: approve request code (named profile only).
+- `action=delegation_redeem`: redeem approved request code and write target session artifacts.
+- `action=delegation_status`: fetch delegation request status by code.
 
 ## Credentials Output Modes
 
@@ -137,7 +141,7 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 ## Shortlinks Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|bootstrap_ephemeral`)
+  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
   - `shortlinks.exec` (`action=create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
 
@@ -172,7 +176,7 @@ args = ["--agent-id", "jay"]
 ## Taskboard Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|bootstrap_ephemeral`)
+  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
   - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=send|recv|ack`)
   - `files.exec` (`action=share`)

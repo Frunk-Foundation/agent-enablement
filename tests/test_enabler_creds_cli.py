@@ -85,8 +85,9 @@ def test_status_reports_set_names(tmp_path: Path, monkeypatch) -> None:
     assert "agentEnablement" in parsed["credentialSets"]
 
 
-def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Path) -> None:
+def test_delegation_request_calls_request_endpoint(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch)
+    monkeypatch.setenv("ENABLER_API_KEY", "key-1")
     called: dict[str, object] = {}
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
@@ -97,14 +98,14 @@ def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Pa
         return (
             200,
             {},
-            json.dumps(
-                {
-                    "kind": "agent-enablement.delegate-token.v1",
-                    "delegateToken": "a.b.c",
-                    "expiresAt": "2099-01-01T00:00:00Z",
-                }
-            ).encode("utf-8"),
-        )
+                json.dumps(
+                    {
+                        "kind": "agent-enablement.delegation.request.v1",
+                        "requestCode": "abc123",
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                    }
+                ).encode("utf-8"),
+            )
 
     monkeypatch.setattr("enabler_cli.creds_main._http_post_json", _fake_post_json)
     result = runner.invoke(
@@ -113,8 +114,8 @@ def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Pa
             "--agent-id",
             "agent-a",
             "--no-auto-refresh-creds",
-            "delegate-token",
-            "create",
+            "delegation",
+            "request",
             "--scopes",
             "taskboard,messages",
             "--ttl-seconds",
@@ -126,18 +127,22 @@ def test_delegate_token_create_calls_delegate_endpoint(monkeypatch, tmp_path: Pa
 
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
-    assert parsed["delegateToken"] == "a.b.c"
-    assert called["url"] == "https://api.example.com/prod/v1/delegate-token"
+    assert parsed["request"]["requestCode"] == "abc123"
+    assert called["url"] == "https://api.example.com/prod/v1/delegation/requests"
+    headers = called["headers"]
+    assert isinstance(headers, dict)
+    assert headers["x-api-key"] == "key-1"
     assert called["body"] == {"scopes": ["taskboard", "messages"], "ttlSeconds": 300, "purpose": "smoke"}
 
 
-def test_exchange_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path) -> None:
+def test_delegation_redeem_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch)
     monkeypatch.setenv("ENABLER_API_KEY", "key-1")
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
-        del headers, body, timeout_seconds
-        assert url == "https://api.example.com/prod/v1/credentials/exchange"
+        del headers, timeout_seconds
+        assert url == "https://api.example.com/prod/v1/delegation/redeem"
+        assert json.loads(body.decode("utf-8")) == {"requestCode": "code-1"}
         exp = "2099-01-01T00:00:00+00:00"
         payload = {
             "kind": "agent-enablement.credentials.v2",
@@ -175,19 +180,20 @@ def test_exchange_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path)
             "--agent-id",
             "agent-a",
             "--no-auto-refresh-creds",
-            "exchange",
-            "--delegate-token",
-            "a.b.c",
+            "delegation",
+            "redeem",
+            "--request-code",
+            "code-1",
         ],
     )
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
-    assert parsed["kind"] == "enabler.creds.exchange.v1"
+    assert parsed["kind"] == "enabler.creds.delegation.redeem.v1"
     assert parsed["credentialSets"] == ["agentEnablement"]
     assert Path(parsed["cachePath"]).exists()
 
 
-def test_exchange_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
+def test_delegation_redeem_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch)
     monkeypatch.delenv("ENABLER_API_KEY", raising=False)
     result = runner.invoke(
@@ -196,74 +202,26 @@ def test_exchange_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
             "--agent-id",
             "agent-a",
             "--no-auto-refresh-creds",
-            "exchange",
-            "--delegate-token",
-            "a.b.c",
+            "delegation",
+            "redeem",
+            "--request-code",
+            "code-1",
         ],
     )
     assert result.exit_code == 1
     assert "missing ENABLER_API_KEY" in str(result.exception)
 
 
-def test_bootstrap_ephemeral_chains_delegate_and_exchange(monkeypatch, tmp_path: Path) -> None:
+def test_delegation_approve_calls_approval_endpoint(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch)
-    monkeypatch.setenv("ENABLER_API_KEY", "key-1")
-    calls: list[str] = []
+    called: dict[str, object] = {}
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
-        del headers, timeout_seconds
-        calls.append(url)
-        if url.endswith("/v1/delegate-token"):
-            return (
-                200,
-                {},
-                json.dumps(
-                    {
-                        "kind": "agent-enablement.delegate-token.v1",
-                        "delegateToken": "a.b.c",
-                        "expiresAt": "2099-01-01T00:00:00Z",
-                        "scopes": ["taskboard", "messages"],
-                        "ephemeralUsername": "ephem-1",
-                        "ephemeralAgentId": "ephem-a1",
-                    }
-                ).encode("utf-8"),
-            )
-        if url.endswith("/v1/credentials/exchange"):
-            exp = "2099-01-01T00:00:00+00:00"
-            return (
-                200,
-                {},
-                json.dumps(
-                    {
-                        "kind": "agent-enablement.credentials.v2",
-                        "expiresAt": exp,
-                        "principal": {"sub": "sub-1", "username": "ephem-1"},
-                        "credentials": {
-                            "accessKeyId": "ASIA1",
-                            "secretAccessKey": "secret",
-                            "sessionToken": "token",
-                            "expiration": exp,
-                        },
-                        "credentialSets": {
-                            "agentEnablement": {
-                                "credentials": {
-                                    "accessKeyId": "ASIA1",
-                                    "secretAccessKey": "secret",
-                                    "sessionToken": "token",
-                                    "expiration": exp,
-                                },
-                                "references": {"awsRegion": "us-east-2"},
-                            }
-                        },
-                        "cognitoTokens": {
-                            "idToken": "a.b.c",
-                            "accessToken": "d.e.f",
-                            "refreshToken": "refresh",
-                        },
-                    }
-                ).encode("utf-8"),
-            )
-        raise AssertionError(url)
+        del timeout_seconds
+        called["url"] = url
+        called["headers"] = headers
+        called["body"] = json.loads(body.decode("utf-8"))
+        return (200, {}, json.dumps({"kind": "agent-enablement.delegation.approval.v1", "status": "approved"}).encode("utf-8"))
 
     monkeypatch.setattr("enabler_cli.creds_main._http_post_json", _fake_post_json)
     result = runner.invoke(
@@ -272,21 +230,23 @@ def test_bootstrap_ephemeral_chains_delegate_and_exchange(monkeypatch, tmp_path:
             "--agent-id",
             "agent-a",
             "--no-auto-refresh-creds",
-            "bootstrap-ephemeral",
+            "delegation",
+            "approve",
+            "--request-code",
+            "code-1",
         ],
     )
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
-    assert parsed["kind"] == "enabler.creds.bootstrap-ephemeral.v1"
-    assert calls == [
-        "https://api.example.com/prod/v1/delegate-token",
-        "https://api.example.com/prod/v1/credentials/exchange",
-    ]
+    assert parsed["kind"] == "enabler.creds.delegation.approve.v1"
+    assert called["url"] == "https://api.example.com/prod/v1/delegation/approvals"
+    assert called["body"] == {"requestCode": "code-1"}
 
 
-def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path, monkeypatch) -> None:
+def test_delegation_request_rejects_non_credentials_endpoint(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("ENABLER_API_KEY", "key-1")
     cache = tmp_path / "sessions" / "agent-a" / "session.json"
     _seed_cache(cache)
     payload = json.loads(cache.read_text(encoding="utf-8"))
@@ -299,8 +259,8 @@ def test_delegate_token_create_rejects_non_credentials_endpoint(tmp_path: Path, 
             "--agent-id",
             "agent-a",
             "--no-auto-refresh-creds",
-            "delegate-token",
-            "create",
+            "delegation",
+            "request",
         ],
     )
     assert result.exit_code == 1

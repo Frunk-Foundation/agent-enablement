@@ -125,7 +125,15 @@ class EnablerMcp:
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["bootstrap_ephemeral", "ensure", "list_sessions", "set_agentid"],
+                            "enum": [
+                                "delegation_approve",
+                                "delegation_redeem",
+                                "delegation_request",
+                                "delegation_status",
+                                "ensure",
+                                "list_sessions",
+                                "set_agentid",
+                            ],
                         },
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
@@ -488,18 +496,13 @@ class EnablerMcp:
                     )
             return {"kind": "enabler.mcp.credentials.sessions.v1", "sessions": sessions}
 
-        if action == "bootstrap_ephemeral":
-            source_doc = self._ensure_doc(g=g, require_id_token=True)
-            if self._profile_type_from_doc(source_doc) != "named":
-                raise UsageError("Only named agent profiles may mint delegate tokens")
-
+        if action == "delegation_request":
             api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
             if not api_key:
                 raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-
-            target_agent_id = str(args.get("targetAgentId") or "").strip()
-            if not target_agent_id:
-                raise UsageError("missing targetAgentId")
+            source_doc = self._ensure_doc(g=g)
+            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            request_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/requests")
             scopes_raw = args.get("scopes")
             if isinstance(scopes_raw, list):
                 scopes = [str(v).strip() for v in scopes_raw if str(v).strip()]
@@ -507,57 +510,112 @@ class EnablerMcp:
                 scopes = ["taskboard", "messages"]
             ttl_seconds = int(args.get("ttlSeconds") or 600)
             purpose = str(args.get("purpose") or "")
-            switch_to_ephemeral = bool(args.get("switchToEphemeral", False))
+            request_resp = self._post_json_checked(
+                url=request_endpoint,
+                headers={
+                    "x-api-key": api_key,
+                    "content-type": "application/json",
+                },
+                body_obj={"scopes": scopes, "ttlSeconds": ttl_seconds, "purpose": purpose},
+                label="delegation request create",
+            )
+            return {
+                "kind": "enabler.mcp.credentials.delegation-request.v1",
+                "agentId": g.agent_id,
+                "request": request_resp,
+            }
+
+        if action == "delegation_approve":
+            source_doc = self._ensure_doc(g=g, require_id_token=True)
+            if self._profile_type_from_doc(source_doc) != "named":
+                raise UsageError("Only named agent profiles may approve delegation requests")
+            request_code = str(args.get("requestCode") or "").strip()
+            if not request_code:
+                raise UsageError("missing requestCode")
 
             id_token = self._id_token_from_doc(source_doc)
             if not id_token:
                 raise UsageError("cached credentials missing cognitoTokens.idToken")
             credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
-            delegate_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
-            exchange_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
-            delegate_resp = self._post_json_checked(
-                url=delegate_endpoint,
+            approval_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/approvals")
+            approval_resp = self._post_json_checked(
+                url=approval_endpoint,
                 headers={
                     "authorization": f"Bearer {id_token}",
                     "content-type": "application/json",
                 },
-                body_obj={"scopes": scopes, "ttlSeconds": ttl_seconds, "purpose": purpose},
-                label="delegate token request",
+                body_obj={"requestCode": request_code},
+                label="delegation request approve",
             )
-            delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
-            if not delegate_token:
-                raise OpError("delegate token response missing delegateToken")
-            exchange_resp = self._post_json_checked(
-                url=exchange_endpoint,
+            return {
+                "kind": "enabler.mcp.credentials.delegation-approve.v1",
+                "agentId": g.agent_id,
+                "approval": approval_resp,
+            }
+
+        if action == "delegation_status":
+            api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+            if not api_key:
+                raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+            source_doc = self._ensure_doc(g=g)
+            request_code = str(args.get("requestCode") or "").strip()
+            if not request_code:
+                raise UsageError("missing requestCode")
+            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            status_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/status")
+            status_resp = self._post_json_checked(
+                url=status_endpoint,
                 headers={
                     "x-api-key": api_key,
-                    "authorization": f"Bearer {delegate_token}",
+                    "content-type": "application/json",
                 },
-                label="credentials exchange request",
+                body_obj={"requestCode": request_code},
+                label="delegation request status",
+            )
+            return {
+                "kind": "enabler.mcp.credentials.delegation-status.v1",
+                "agentId": g.agent_id,
+                "status": status_resp,
+            }
+
+        if action == "delegation_redeem":
+            api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+            if not api_key:
+                raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+            source_doc = self._ensure_doc(g=g)
+            request_code = str(args.get("requestCode") or "").strip()
+            if not request_code:
+                raise UsageError("missing requestCode")
+            target_agent_id = str(args.get("targetAgentId") or "").strip() or g.agent_id
+            switch_to_target = bool(args.get("switchToTarget", False))
+            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            redeem_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/redeem")
+            redeem_resp = self._post_json_checked(
+                url=redeem_endpoint,
+                headers={
+                    "x-api-key": api_key,
+                    "content-type": "application/json",
+                },
+                body_obj={"requestCode": request_code},
+                label="delegation request redeem",
             )
             target_g = self._g_for_agent(target_agent_id)
-            artifacts = self._write_exchange_artifacts(g=target_g, response_obj=exchange_resp)
+            artifacts = self._write_exchange_artifacts(g=target_g, response_obj=redeem_resp)
             switched = False
-            if switch_to_ephemeral:
+            if switch_to_target:
                 with self._context_lock:
                     self._default_agent_id = target_agent_id
                 switched = True
             return {
-                "kind": "enabler.mcp.credentials.bootstrap-ephemeral.v1",
-                "fromAgentId": g.agent_id,
+                "kind": "enabler.mcp.credentials.delegation-redeem.v1",
+                "agentId": g.agent_id,
                 "targetAgentId": target_agent_id,
-                "delegate": {
-                    "expiresAt": delegate_resp.get("expiresAt"),
-                    "scopes": delegate_resp.get("scopes"),
-                    "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
-                    "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
-                },
-                "principal": exchange_resp.get("principal"),
-                "credentialSets": sorted(list((exchange_resp.get("credentialSets") or {}).keys()))
-                if isinstance(exchange_resp.get("credentialSets"), dict)
-                else [],
                 "switched": switched,
                 "currentDefaultAgentId": self._current_agent_id(),
+                "principal": redeem_resp.get("principal"),
+                "credentialSets": sorted(list((redeem_resp.get("credentialSets") or {}).keys()))
+                if isinstance(redeem_resp.get("credentialSets"), dict)
+                else [],
                 **artifacts,
             }
 

@@ -299,11 +299,11 @@ def credential_process(
     sys.stdout.write(json.dumps(out, separators=(",", ":"), sort_keys=True) + "\n")
 
 
-delegate_token_app = typer.Typer(
-    help="Delegate token helpers for ephemeral credential exchange.",
+delegation_app = typer.Typer(
+    help="Delegation request/approve/redeem helpers.",
     no_args_is_help=True,
 )
-app.add_typer(delegate_token_app, name="delegate-token")
+app.add_typer(delegation_app, name="delegation")
 
 session_app = typer.Typer(
     help="Managed agent-id session helpers.",
@@ -312,129 +312,111 @@ session_app = typer.Typer(
 app.add_typer(session_app, name="session")
 
 
-@delegate_token_app.command("create", help="Mint a delegate token as a named profile.")
-def delegate_token_create(
+@delegation_app.command("request", help="Create a short-code delegation request.")
+def delegation_request(
     ctx: typer.Context,
     scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
-    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
+    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegation request TTL in seconds"),
     purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
 ) -> None:
     g = _ctx_global(ctx)
     doc = _ensure_doc(g)
-    id_token = _id_token_from_doc(doc)
-    if not id_token:
-        raise UsageError("cached credentials missing cognitoTokens.idToken")
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
     credentials_endpoint = _runtime_credentials_endpoint(doc)
-    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
+    request_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegation/requests")
     requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
-    payload = {
-        "scopes": requested_scopes,
-        "ttlSeconds": int(ttl_seconds),
-        "purpose": str(purpose or ""),
-    }
+    payload = {"scopes": requested_scopes, "ttlSeconds": int(ttl_seconds), "purpose": str(purpose or "")}
     out = _post_json_checked(
-        url=delegate_endpoint,
+        url=request_endpoint,
         headers={
-            "authorization": f"Bearer {id_token}",
+            "x-api-key": api_key,
             "content-type": "application/json",
         },
         body_obj=payload,
-        label="delegate token request",
+        label="delegation request",
     )
-    _print_json(out, pretty=g.pretty)
+    _print_json({"kind": "enabler.creds.delegation.request.v1", "request": out}, pretty=g.pretty)
 
 
-@app.command("exchange", help="Exchange delegate token for ephemeral credentials and write cache artifacts.")
-def exchange(
+@delegation_app.command("approve", help="Approve a pending delegation request as a named profile.")
+def delegation_approve(
     ctx: typer.Context,
-    delegate_token: str = typer.Option(..., "--delegate-token", help="Delegate token JWT from delegate-token create"),
-) -> None:
-    g = _ctx_global(ctx)
-    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
-    if not api_key:
-        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-    doc = _ensure_doc(g)
-    credentials_endpoint = _runtime_credentials_endpoint(doc)
-    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
-    resp = _post_json_checked(
-        url=exchange_endpoint,
-        headers={
-            "x-api-key": api_key,
-            "authorization": f"Bearer {delegate_token}",
-        },
-        label="credentials exchange request",
-    )
-    artifacts = _write_exchange_artifacts(g=g, response_obj=resp)
-    payload = {
-        "kind": "enabler.creds.exchange.v1",
-        "principal": resp.get("principal"),
-        "credentialSets": sorted(
-            list((resp.get("credentialSets") or {}).keys())
-        )
-        if isinstance(resp.get("credentialSets"), dict)
-        else [],
-        **artifacts,
-    }
-    _print_json(payload, pretty=g.pretty)
-
-
-@app.command("bootstrap-ephemeral", help="Create delegate token then exchange it, writing cache artifacts.")
-def bootstrap_ephemeral(
-    ctx: typer.Context,
-    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
-    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
-    purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
+    request_code: str = typer.Option(..., "--request-code", help="Delegation request code"),
 ) -> None:
     g = _ctx_global(ctx)
     doc = _ensure_doc(g)
     id_token = _id_token_from_doc(doc)
     if not id_token:
         raise UsageError("cached credentials missing cognitoTokens.idToken")
-    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
-    if not api_key:
-        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
     credentials_endpoint = _runtime_credentials_endpoint(doc)
-    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
-    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
-    requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
-    delegate_resp = _post_json_checked(
-        url=delegate_endpoint,
+    approval_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegation/approvals")
+    out = _post_json_checked(
+        url=approval_endpoint,
         headers={
             "authorization": f"Bearer {id_token}",
             "content-type": "application/json",
         },
-        body_obj={
-            "scopes": requested_scopes,
-            "ttlSeconds": int(ttl_seconds),
-            "purpose": str(purpose or ""),
-        },
-        label="delegate token request",
+        body_obj={"requestCode": request_code},
+        label="delegation approval request",
     )
-    delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
-    if not delegate_token:
-        raise OpError("delegate token response missing delegateToken")
-    exchange_resp = _post_json_checked(
-        url=exchange_endpoint,
+    _print_json({"kind": "enabler.creds.delegation.approve.v1", "approval": out}, pretty=g.pretty)
+
+
+@delegation_app.command("status", help="Read status for a delegation request code.")
+def delegation_status(
+    ctx: typer.Context,
+    request_code: str = typer.Option(..., "--request-code", help="Delegation request code"),
+) -> None:
+    g = _ctx_global(ctx)
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+    doc = _ensure_doc(g)
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    status_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegation/status")
+    out = _post_json_checked(
+        url=status_endpoint,
         headers={
             "x-api-key": api_key,
-            "authorization": f"Bearer {delegate_token}",
+            "content-type": "application/json",
         },
-        label="credentials exchange request",
+        body_obj={"requestCode": request_code},
+        label="delegation status request",
     )
-    artifacts = _write_exchange_artifacts(g=g, response_obj=exchange_resp)
-    payload = {
-        "kind": "enabler.creds.bootstrap-ephemeral.v1",
-        "delegate": {
-            "expiresAt": delegate_resp.get("expiresAt"),
-            "scopes": delegate_resp.get("scopes"),
-            "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
-            "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
+    _print_json({"kind": "enabler.creds.delegation.status.v1", "status": out}, pretty=g.pretty)
+
+
+@delegation_app.command("redeem", help="Redeem an approved delegation request and write cache artifacts.")
+def delegation_redeem(
+    ctx: typer.Context,
+    request_code: str = typer.Option(..., "--request-code", help="Delegation request code"),
+) -> None:
+    g = _ctx_global(ctx)
+    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
+    if not api_key:
+        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
+    doc = _ensure_doc(g)
+    credentials_endpoint = _runtime_credentials_endpoint(doc)
+    redeem_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegation/redeem")
+    redeem_resp = _post_json_checked(
+        url=redeem_endpoint,
+        headers={
+            "x-api-key": api_key,
+            "content-type": "application/json",
         },
-        "principal": exchange_resp.get("principal"),
+        body_obj={"requestCode": request_code},
+        label="delegation redeem request",
+    )
+    artifacts = _write_exchange_artifacts(g=g, response_obj=redeem_resp)
+    payload = {
+        "kind": "enabler.creds.delegation.redeem.v1",
+        "principal": redeem_resp.get("principal"),
         "credentialSets": sorted(
-            list((exchange_resp.get("credentialSets") or {}).keys())
+            list((redeem_resp.get("credentialSets") or {}).keys())
         )
-        if isinstance(exchange_resp.get("credentialSets"), dict)
+        if isinstance(redeem_resp.get("credentialSets"), dict)
         else [],
         **artifacts,
     }
@@ -552,85 +534,6 @@ def session_bootstrap_named(
         },
         pretty=g.pretty,
     )
-
-
-@session_app.command("bootstrap-ephemeral", help="Create delegate token from named session and exchange into ephemeral session.")
-def session_bootstrap_ephemeral(
-    ctx: typer.Context,
-    agent_id: str = typer.Option(..., "--agent-id", help="Target ephemeral identity key"),
-    from_agent_id: str = typer.Option(..., "--from-agent-id", help="Source named identity key"),
-    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
-    ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegate token TTL in seconds"),
-    purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
-) -> None:
-    base = _ctx_global(ctx)
-    source_g = GlobalOpts(
-        stack=base.stack,
-        pretty=base.pretty,
-        quiet=base.quiet,
-        auto_refresh_creds=True,
-        agent_id=from_agent_id,
-    )
-    target_g = GlobalOpts(
-        stack=base.stack,
-        pretty=base.pretty,
-        quiet=base.quiet,
-        auto_refresh_creds=True,
-        agent_id=agent_id,
-    )
-    doc = _ensure_doc(source_g)
-    id_token = _id_token_from_doc(doc)
-    if not id_token:
-        raise UsageError("cached credentials missing cognitoTokens.idToken")
-    api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
-    if not api_key:
-        raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-    credentials_endpoint = _runtime_credentials_endpoint(doc)
-    delegate_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/delegate-token")
-    exchange_endpoint = _derive_endpoint(credentials_endpoint, suffix="/v1/credentials/exchange")
-    requested_scopes = [p.strip() for p in scopes.split(",") if p.strip()]
-    delegate_resp = _post_json_checked(
-        url=delegate_endpoint,
-        headers={
-            "authorization": f"Bearer {id_token}",
-            "content-type": "application/json",
-        },
-        body_obj={
-            "scopes": requested_scopes,
-            "ttlSeconds": int(ttl_seconds),
-            "purpose": str(purpose or ""),
-        },
-        label="delegate token request",
-    )
-    delegate_token = str(delegate_resp.get("delegateToken") or "").strip()
-    if not delegate_token:
-        raise OpError("delegate token response missing delegateToken")
-    exchange_resp = _post_json_checked(
-        url=exchange_endpoint,
-        headers={
-            "x-api-key": api_key,
-            "authorization": f"Bearer {delegate_token}",
-        },
-        label="credentials exchange request",
-    )
-    artifacts = _write_exchange_artifacts(g=target_g, response_obj=exchange_resp)
-    _print_json(
-        {
-            "kind": "enabler.session.bootstrap-ephemeral.v1",
-            "agentId": agent_id,
-            "fromAgentId": from_agent_id,
-            "delegate": {
-                "expiresAt": delegate_resp.get("expiresAt"),
-                "scopes": delegate_resp.get("scopes"),
-                "ephemeralUsername": delegate_resp.get("ephemeralUsername"),
-                "ephemeralAgentId": delegate_resp.get("ephemeralAgentId"),
-            },
-            "principal": exchange_resp.get("principal"),
-            **artifacts,
-        },
-        pretty=base.pretty,
-    )
-
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)

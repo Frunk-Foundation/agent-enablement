@@ -4,7 +4,6 @@ import re
 import time
 import base64
 import hashlib
-import hmac
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -20,6 +19,7 @@ _ddb_client = None
 _cognito_client = None
 
 PROFILE_TABLE_NAME = os.environ.get("PROFILE_TABLE_NAME", "")
+DELEGATION_REQUESTS_TABLE_NAME = os.environ.get("DELEGATION_REQUESTS_TABLE_NAME", "")
 ASSUME_ROLE_RUNTIME_ARN = os.environ.get("ASSUME_ROLE_RUNTIME_ARN", "")
 ASSUME_ROLE_PROVISIONING_ARN = os.environ.get("ASSUME_ROLE_PROVISIONING_ARN", "")
 ASSUME_ROLE_AGENT_WORKSHOP_PROVISIONING_ARN = os.environ.get(
@@ -53,11 +53,12 @@ CREDENTIALS_PATH = os.environ.get("CREDENTIALS_PATH", "/v1/credentials")
 CREDENTIALS_REFRESH_PATH = os.environ.get(
     "CREDENTIALS_REFRESH_PATH", "/v1/credentials/refresh"
 )
-DELEGATE_TOKEN_PATH = os.environ.get("DELEGATE_TOKEN_PATH", "/v1/delegate-token")
-CREDENTIALS_EXCHANGE_PATH = os.environ.get(
-    "CREDENTIALS_EXCHANGE_PATH", "/v1/credentials/exchange"
-)
-DELEGATE_TOKEN_SIGNING_SECRET = os.environ.get("DELEGATE_TOKEN_SIGNING_SECRET", "")
+DELEGATION_REQUEST_PATH = os.environ.get("DELEGATION_REQUEST_PATH", "/v1/delegation/requests")
+DELEGATION_APPROVAL_PATH = os.environ.get("DELEGATION_APPROVAL_PATH", "/v1/delegation/approvals")
+DELEGATION_REDEEM_PATH = os.environ.get("DELEGATION_REDEEM_PATH", "/v1/delegation/redeem")
+DELEGATION_STATUS_PATH = os.environ.get("DELEGATION_STATUS_PATH", "/v1/delegation/status")
+DELEGATION_DEFAULT_TTL_SECONDS = int(os.environ.get("DELEGATION_DEFAULT_TTL_SECONDS", "600"))
+DELEGATION_MAX_TTL_SECONDS = int(os.environ.get("DELEGATION_MAX_TTL_SECONDS", "600"))
 USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 SHORTLINK_CREATE_PATH = os.environ.get("SHORTLINK_CREATE_PATH", "/v1/links")
 SHORTLINK_REDIRECT_PREFIX = os.environ.get("SHORTLINK_REDIRECT_PREFIX", "/l/")
@@ -69,6 +70,7 @@ API_KEY_SSM_PARAMETER_NAME = os.environ.get("API_KEY_SSM_PARAMETER_NAME", "")
 SSM_KEYS_STAGE = os.environ.get("SSM_KEYS_STAGE", "")
 API_REQUIRED_HEADERS = os.environ.get("API_REQUIRED_HEADERS", "x-api-key,authorization")
 STACK_NAME_PATTERN_TEMPLATE = "agent-${aws:PrincipalTag/sub}-*"
+_DELEGATION_ALLOWED_SCOPES = {"taskboard", "messages", "files", "shortlinks"}
 
 
 def _arn_account_id(arn: str) -> str:
@@ -273,16 +275,6 @@ def _decode_jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
-
-
-def _b64url_decode(data: str) -> bytes:
-    raw = str(data or "")
-    raw += "=" * (-len(raw) % 4)
-    return base64.urlsafe_b64decode(raw.encode("utf-8"))
-
-
 def _parse_json_body(event: dict[str, Any]) -> dict[str, Any]:
     raw = event.get("body")
     if raw is None:
@@ -299,57 +291,80 @@ def _parse_json_body(event: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
-def _delegate_token_sign(claims: dict[str, Any]) -> str:
-    if not DELEGATE_TOKEN_SIGNING_SECRET:
-        raise ValueError("missing delegate token signing secret")
-    header = {"alg": "HS256", "typ": "JWT"}
-    head = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
-    body = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
-    signing_input = f"{head}.{body}".encode("utf-8")
-    sig = hmac.new(
-        DELEGATE_TOKEN_SIGNING_SECRET.encode("utf-8"),
-        signing_input,
-        hashlib.sha256,
-    ).digest()
-    return f"{head}.{body}.{_b64url_encode(sig)}"
+def _delegation_scopes(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("scopes")
+    scopes: list[str] = []
+    if isinstance(raw, list):
+        for val in raw:
+            scope = str(val or "").strip().lower()
+            if scope in _DELEGATION_ALLOWED_SCOPES and scope not in scopes:
+                scopes.append(scope)
+    if not scopes:
+        scopes = ["taskboard", "messages"]
+    return scopes
 
 
-def _delegate_token_verify(token: str) -> dict[str, Any] | None:
-    parts = str(token or "").split(".")
-    if len(parts) != 3:
-        return None
-    head, body, sig = parts
-    if not DELEGATE_TOKEN_SIGNING_SECRET:
-        return None
-    signing_input = f"{head}.{body}".encode("utf-8")
-    expected_sig = hmac.new(
-        DELEGATE_TOKEN_SIGNING_SECRET.encode("utf-8"),
-        signing_input,
-        hashlib.sha256,
-    ).digest()
+def _delegation_ttl_seconds(payload: dict[str, Any]) -> int:
     try:
-        got_sig = _b64url_decode(sig)
+        ttl = int(payload.get("ttlSeconds"))
     except Exception:
-        return None
-    if not hmac.compare_digest(expected_sig, got_sig):
-        return None
+        ttl = DELEGATION_DEFAULT_TTL_SECONDS
+    max_ttl = max(60, min(DELEGATION_MAX_TTL_SECONDS, _duration_seconds()))
+    return max(60, min(ttl, max_ttl))
+
+
+def _new_b58_id() -> str:
+    return uuid_text_to_base58_22(str(uuid.uuid4()))
+
+
+def _delegation_now_epoch() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _delegation_table() -> str:
+    return str(DELEGATION_REQUESTS_TABLE_NAME or "").strip()
+
+
+def _delegation_get(request_code: str) -> dict[str, Any] | None:
+    out = _ddb().get_item(
+        TableName=_delegation_table(),
+        Key={"requestCode": {"S": request_code}},
+        ConsistentRead=True,
+    )
+    return out.get("Item")
+
+
+def _delegation_status(item: dict[str, Any]) -> str:
+    return _ddb_str(item, "status", default="").strip().lower()
+
+
+def _delegation_expired(item: dict[str, Any]) -> bool:
     try:
-        claims = json.loads(_b64url_decode(body).decode("utf-8"))
+        exp_epoch = int((item.get("expiresAtEpoch") or {}).get("N") or "0")
     except Exception:
-        return None
-    if not isinstance(claims, dict):
-        return None
-    try:
-        exp = int(claims.get("exp") or 0)
-    except Exception:
-        exp = 0
-    now = int(datetime.now(timezone.utc).timestamp())
-    if exp <= now:
-        return None
-    aud = str(claims.get("aud") or "")
-    if aud != "credentials-exchange":
-        return None
-    return claims
+        exp_epoch = 0
+    return exp_epoch <= _delegation_now_epoch()
+
+
+def _delegation_item_to_payload(item: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+    scopes = sorted(list(profile_ddb_str_list(item.get("scopes"))))
+    return {
+        "kind": "agent-enablement.delegation.status.v1",
+        "requestId": request_id,
+        "requestCode": _ddb_str(item, "requestCode"),
+        "delegationRequestId": _ddb_str(item, "requestId"),
+        "status": _ddb_str(item, "status"),
+        "scopes": scopes,
+        "purpose": _ddb_str(item, "purpose"),
+        "requestedAt": _ddb_str(item, "requestedAt"),
+        "approvedAt": _ddb_str(item, "approvedAt"),
+        "approvedBySub": _ddb_str(item, "approvedBySub"),
+        "approvedByUsername": _ddb_str(item, "approvedByUsername"),
+        "redeemedAt": _ddb_str(item, "redeemedAt"),
+        "expiresAt": _ddb_str(item, "expiresAt"),
+        "ephemeralAgentId": _ddb_str(item, "ephemeralAgentId"),
+        "ephemeralUsername": _ddb_str(item, "ephemeralUsername"),
+    }
 
 
 def _profile_type(item: dict[str, Any]) -> str:
@@ -359,13 +374,6 @@ def _profile_type(item: dict[str, Any]) -> str:
     if raw == "ephemeral":
         return "ephemeral"
     return "invalid"
-
-
-def _parse_bearer_token(event: dict[str, Any]) -> str:
-    auth = _get_header(event, "authorization")
-    if not auth or not auth.lower().startswith("bearer "):
-        return ""
-    return str(auth.split(" ", 1)[1] or "").strip()
 
 
 def _authorizer_claim(event: dict[str, Any], key: str) -> str:
@@ -579,8 +587,66 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             wide_event["outcome"] = "error"
             return _response(status_code, body)
 
-        if _request_matches_path(event, DELEGATE_TOKEN_PATH):
-            if not DELEGATE_TOKEN_SIGNING_SECRET:
+        if _request_matches_path(event, DELEGATION_REQUEST_PATH):
+            if not _delegation_table():
+                return _response(
+                    500,
+                    {
+                        "errorCode": "MISCONFIGURED",
+                        "message": "Server misconfigured",
+                        "requestId": request_id,
+                    },
+                )
+            payload = _parse_json_body(event)
+            scopes = _delegation_scopes(payload)
+            ttl_seconds = _delegation_ttl_seconds(payload)
+            purpose = str(payload.get("purpose") or "").strip()[:256]
+            now = datetime.now(timezone.utc)
+            exp = now + timedelta(seconds=ttl_seconds)
+            request_code = _new_b58_id()
+            delegation_request_id = _new_b58_id()
+            ephemeral_session_id = _new_b58_id()
+            ephemeral_agent_id = f"ephem-{ephemeral_session_id}"
+            ephemeral_username = ephemeral_agent_id
+            source_ip = (
+                str((event.get("requestContext") or {}).get("identity", {}).get("sourceIp") or "").strip()
+            )
+            ip_hash = hashlib.sha256(source_ip.encode("utf-8")).hexdigest() if source_ip else ""
+            _ddb().put_item(
+                TableName=_delegation_table(),
+                Item={
+                    "requestCode": {"S": request_code},
+                    "requestId": {"S": delegation_request_id},
+                    "status": {"S": "pending"},
+                    "requestedAt": {"S": _iso(now)},
+                    "expiresAt": {"S": _iso(exp)},
+                    "expiresAtEpoch": {"N": str(int(exp.timestamp()))},
+                    "scopes": {"SS": scopes},
+                    "purpose": {"S": purpose},
+                    "ephemeralAgentId": {"S": ephemeral_agent_id},
+                    "ephemeralUsername": {"S": ephemeral_username},
+                    "requestedByIpHash": {"S": ip_hash},
+                },
+            )
+            return _response(
+                200,
+                {
+                    "kind": "agent-enablement.delegation.request.v1",
+                    "requestId": request_id,
+                    "delegationRequestId": delegation_request_id,
+                    "requestCode": request_code,
+                    "status": "pending",
+                    "scopes": scopes,
+                    "purpose": purpose,
+                    "ttlSeconds": ttl_seconds,
+                    "expiresAt": _iso(exp),
+                    "ephemeralAgentId": ephemeral_agent_id,
+                    "ephemeralUsername": ephemeral_username,
+                },
+            )
+
+        if _request_matches_path(event, DELEGATION_APPROVAL_PATH):
+            if not _delegation_table():
                 return _response(
                     500,
                     {
@@ -620,81 +686,125 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                     },
                 )
             caller_profile_type = _profile_type(caller_profile)
-            if caller_profile_type == "invalid":
-                return _response(
-                    422,
-                    {
-                        "errorCode": "INVALID_PROFILE",
-                        "message": "Unsupported profileType",
-                        "requestId": request_id,
-                    },
-                )
             if caller_profile_type != "named":
                 return _response(
                     403,
                     {
                         "errorCode": "UNAUTHORIZED",
-                        "message": "Only named agent profiles may mint delegate tokens",
+                        "message": "Only named agent profiles may approve delegation requests",
                         "requestId": request_id,
                     },
                 )
             payload = _parse_json_body(event)
-            scope_in = payload.get("scopes")
-            scopes: list[str] = []
-            if isinstance(scope_in, list):
-                for raw in scope_in:
-                    v = str(raw or "").strip().lower()
-                    if v in {"taskboard", "messages", "files", "shortlinks"} and v not in scopes:
-                        scopes.append(v)
-            if not scopes:
-                scopes = ["taskboard", "messages"]
-            ttl_in = payload.get("ttlSeconds")
+            request_code = str(payload.get("requestCode") or "").strip()
+            if not request_code:
+                return _response(
+                    400,
+                    {
+                        "errorCode": "INVALID_REQUEST",
+                        "message": "Missing requestCode",
+                        "requestId": request_id,
+                    },
+                )
+            existing = _delegation_get(request_code)
+            if not existing:
+                return _response(
+                    404,
+                    {
+                        "errorCode": "NOT_FOUND",
+                        "message": "Delegation request not found",
+                        "requestId": request_id,
+                    },
+                )
+            if _delegation_expired(existing):
+                return _response(
+                    410,
+                    {
+                        "errorCode": "EXPIRED",
+                        "message": "Delegation request expired",
+                        "requestId": request_id,
+                    },
+                )
             try:
-                ttl_seconds = int(ttl_in) if ttl_in is not None else 600
-            except Exception:
-                ttl_seconds = 600
-            ttl_seconds = max(60, min(ttl_seconds, _duration_seconds()))
-            purpose = str(payload.get("purpose") or "").strip()[:256]
-            now = datetime.now(timezone.utc)
-            exp = now + timedelta(seconds=ttl_seconds)
-            delegator_agent_id = _ddb_str(caller_profile, "agentId", default="") or caller_username or "named-agent"
-            session_uuid = str(uuid.uuid4())
-            session_id = uuid_text_to_base58_22(session_uuid)
-            ephemeral_username = f"ephem-{session_id}"
-            claims = {
-                "iss": "agent-enablement",
-                "aud": "credentials-exchange",
-                "sub": caller_sub,
-                "delegatorUsername": caller_username,
-                "delegatorAgentId": delegator_agent_id,
-                "profileType": "ephemeral",
-                "ephemeralAgentId": f"ephem-{session_id}",
-                "ephemeralUsername": ephemeral_username,
-                "scope": scopes,
-                "purpose": purpose,
-                "iat": int(now.timestamp()),
-                "exp": int(exp.timestamp()),
-                "jti": uuid_text_to_base58_22(str(uuid.uuid4())),
-            }
-            delegate_token = _delegate_token_sign(claims)
-            return _response(
-                200,
-                {
-                    "kind": "agent-enablement.delegate-token.v1",
-                    "requestId": request_id,
-                    "delegateToken": delegate_token,
-                    "expiresAt": exp.isoformat(),
-                    "scopes": scopes,
-                    "ephemeralUsername": ephemeral_username,
-                    "ephemeralAgentId": claims["ephemeralAgentId"],
-                },
-            )
+                out = _ddb().update_item(
+                    TableName=_delegation_table(),
+                    Key={"requestCode": {"S": request_code}},
+                    ConditionExpression="#st = :pending AND expiresAtEpoch > :now_epoch",
+                    UpdateExpression="SET #st = :approved, approvedAt = :approved_at, approvedBySub = :approved_by_sub, approvedByUsername = :approved_by_username",
+                    ExpressionAttributeNames={"#st": "status"},
+                    ExpressionAttributeValues={
+                        ":pending": {"S": "pending"},
+                        ":approved": {"S": "approved"},
+                        ":approved_at": {"S": _now_iso()},
+                        ":approved_by_sub": {"S": caller_sub},
+                        ":approved_by_username": {"S": caller_username},
+                        ":now_epoch": {"N": str(_delegation_now_epoch())},
+                    },
+                    ReturnValues="ALL_NEW",
+                )
+            except Exception as e:
+                if type(e).__name__ == "ConditionalCheckFailedException":
+                    return _response(
+                        409,
+                        {
+                            "errorCode": "INVALID_STATE",
+                            "message": "Delegation request is not pending or is expired",
+                            "requestId": request_id,
+                        },
+                    )
+                raise
+            attrs = out.get("Attributes") or {}
+            payload_out = _delegation_item_to_payload(attrs, request_id=request_id)
+            payload_out["kind"] = "agent-enablement.delegation.approval.v1"
+            return _response(200, payload_out)
+
+        if _request_matches_path(event, DELEGATION_STATUS_PATH):
+            if not _delegation_table():
+                return _response(
+                    500,
+                    {
+                        "errorCode": "MISCONFIGURED",
+                        "message": "Server misconfigured",
+                        "requestId": request_id,
+                    },
+                )
+            payload = _parse_json_body(event)
+            request_code = str(payload.get("requestCode") or "").strip()
+            if not request_code:
+                return _response(
+                    400,
+                    {
+                        "errorCode": "INVALID_REQUEST",
+                        "message": "Missing requestCode",
+                        "requestId": request_id,
+                    },
+                )
+            existing = _delegation_get(request_code)
+            if not existing:
+                return _response(
+                    404,
+                    {
+                        "errorCode": "NOT_FOUND",
+                        "message": "Delegation request not found",
+                        "requestId": request_id,
+                    },
+                )
+            return _response(200, _delegation_item_to_payload(existing, request_id=request_id))
 
         auth_result: dict[str, Any] = {}
         claims: dict[str, Any] = {}
         input_username = ""
         auth_mode = "basic"
-        if _request_matches_path(event, CREDENTIALS_EXCHANGE_PATH):
+        if _request_matches_path(event, DELEGATION_REDEEM_PATH):
+            if not _delegation_table():
+                status_code = 500
+                body = {
+                    "errorCode": "MISCONFIGURED",
+                    "message": "Server misconfigured",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "error"
+                return _response(status_code, body)
             if not USER_POOL_ID:
                 status_code = 500
                 body = {
@@ -704,24 +814,51 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 }
                 wide_event["outcome"] = "error"
                 return _response(status_code, body)
-            delegate_token = _parse_bearer_token(event)
-            claims = _delegate_token_verify(delegate_token)
-            if not claims:
+            payload = _parse_json_body(event)
+            request_code = str(payload.get("requestCode") or "").strip()
+            if not request_code:
                 status_code = 401
                 body = {
                     "errorCode": "UNAUTHORIZED",
-                    "message": "Missing or invalid delegate token",
+                    "message": "Missing requestCode",
                     "requestId": request_id,
                 }
                 wide_event["outcome"] = "unauthorized"
                 return _response(status_code, body)
-            ephemeral_username = str(claims.get("ephemeralUsername") or "").strip()
-            ephemeral_agent_id = str(claims.get("ephemeralAgentId") or "").strip()
+            try:
+                out = _ddb().update_item(
+                    TableName=_delegation_table(),
+                    Key={"requestCode": {"S": request_code}},
+                    ConditionExpression="#st = :approved AND expiresAtEpoch > :now_epoch",
+                    UpdateExpression="SET #st = :redeemed, redeemedAt = :redeemed_at",
+                    ExpressionAttributeNames={"#st": "status"},
+                    ExpressionAttributeValues={
+                        ":approved": {"S": "approved"},
+                        ":redeemed": {"S": "redeemed"},
+                        ":redeemed_at": {"S": _now_iso()},
+                        ":now_epoch": {"N": str(_delegation_now_epoch())},
+                    },
+                    ReturnValues="ALL_NEW",
+                )
+            except Exception as e:
+                if type(e).__name__ == "ConditionalCheckFailedException":
+                    status_code = 401
+                    body = {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Delegation request is not redeemable",
+                        "requestId": request_id,
+                    }
+                    wide_event["outcome"] = "unauthorized"
+                    return _response(status_code, body)
+                raise
+            claims = out.get("Attributes") or {}
+            ephemeral_username = _ddb_str(claims, "ephemeralUsername", default="").strip()
+            ephemeral_agent_id = _ddb_str(claims, "ephemeralAgentId", default="").strip()
             if not ephemeral_username or not ephemeral_agent_id:
                 status_code = 401
                 body = {
                     "errorCode": "UNAUTHORIZED",
-                    "message": "Invalid delegate token claims",
+                    "message": "Invalid delegation request",
                     "requestId": request_id,
                 }
                 wide_event["outcome"] = "unauthorized"
@@ -740,7 +877,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                     status_code = 401
                     body = {
                         "errorCode": "UNAUTHORIZED",
-                        "message": "Delegate token already used",
+                        "message": "Delegation request already used",
                         "requestId": request_id,
                     }
                     wide_event["outcome"] = "unauthorized"
@@ -757,7 +894,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 AuthFlow="USER_PASSWORD_AUTH",
                 AuthParameters={"USERNAME": ephemeral_username, "PASSWORD": generated_password},
             )
-            auth_mode = "delegate-token"
+            auth_mode = "delegation-redeem"
             auth_result = resp.get("AuthenticationResult") or {}
             input_username = ephemeral_username
         elif _request_matches_path(event, CREDENTIALS_REFRESH_PATH):
@@ -867,8 +1004,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             wide_event["outcome"] = "unauthorized"
             return _response(status_code, body)
 
-        if auth_mode == "delegate-token":
-            # Best-effort replay protection without nonce store: token reuse collides on username.
+        if auth_mode == "delegation-redeem":
             try:
                 _ddb().put_item(
                     TableName=PROFILE_TABLE_NAME,
@@ -878,7 +1014,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                         "profileType": {"S": "ephemeral"},
                         "credentialScope": {"S": "runtime"},
                         "assumeRoleArn": {"S": ASSUME_ROLE_RUNTIME_ARN},
-                        "agentId": {"S": str(claims.get("ephemeralAgentId") or "ephemeral")},
+                        "agentId": {"S": _ddb_str(claims, "ephemeralAgentId", default="ephemeral")},
                         "s3Bucket": {"S": UPLOAD_BUCKET},
                         "commsFilesBucket": {"S": COMMS_FILES_BUCKET},
                         "sqsQueueArn": {"S": SQS_QUEUE_ARN},

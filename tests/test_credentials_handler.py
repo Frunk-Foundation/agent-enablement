@@ -39,6 +39,7 @@ def _load_handler(monkeypatch):
     )
     monkeypatch.setenv("ENABLEMENT_VERSION", "latest")
     monkeypatch.setenv("API_KEY_SSM_PARAMETER_NAME", "/agent-enablement/AgentEnablementStack/prod/shared-api-key")
+    monkeypatch.setenv("DELEGATION_REQUESTS_TABLE_NAME", "DelegationRequests")
 
     if "lambda" not in sys.path:
         sys.path.insert(0, "lambda")
@@ -890,49 +891,39 @@ def test_invalid_profile_type_returns_422(monkeypatch):
     assert "Unsupported profileType" in out["body"]
 
 
-def test_delegate_token_route_issues_signed_token_for_named_profile(monkeypatch):
-    monkeypatch.setenv("DELEGATE_TOKEN_SIGNING_SECRET", "test-secret")
+def test_delegation_request_route_issues_short_code(monkeypatch):
     handler_module = _load_handler(monkeypatch)
+    captured: dict[str, object] = {}
 
-    def fake_get_item(**kwargs):
-        return {
-            "Item": {
-                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
-                "enabled": {"BOOL": True},
-                "profileType": {"S": "named"},
-                "agentId": {"S": "named-agent"},
-            }
-        }
+    class FakeDdb:
+        @staticmethod
+        def put_item(**kwargs):
+            captured["put"] = kwargs
 
-    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    handler_module._ddb_client = FakeDdb()
     event = {
-        "path": "/v1/delegate-token",
+        "path": "/v1/delegation/requests",
         "body": json.dumps({"scopes": ["taskboard", "messages"], "ttlSeconds": 600, "purpose": "test"}),
         "requestContext": {
             "requestId": "r1",
-            "authorizer": {
-                "claims": {
-                    "sub": "21ebf510-90f1-7051-64e1-865ec0c362a8",
-                    "cognito:username": "named-user",
-                }
-            },
+            "identity": {"sourceIp": "127.0.0.1"},
         },
     }
     out = handler_module.handler(event, None)
     body = json.loads(out["body"])
 
     assert out["statusCode"] == 200
-    assert body["kind"] == "agent-enablement.delegate-token.v1"
-    assert isinstance(body.get("delegateToken"), str)
-    assert body["delegateToken"].count(".") == 2
+    assert body["kind"] == "agent-enablement.delegation.request.v1"
+    assert isinstance(body.get("requestCode"), str)
+    assert len(body["requestCode"]) == 22
+    assert "put" in captured
 
 
-def test_credentials_exchange_missing_delegate_token_is_unauthorized(monkeypatch):
-    monkeypatch.setenv("DELEGATE_TOKEN_SIGNING_SECRET", "test-secret")
+def test_delegation_redeem_missing_request_code_is_unauthorized(monkeypatch):
     handler_module = _load_handler(monkeypatch)
     out = handler_module.handler(
-        {"path": "/v1/credentials/exchange", "headers": {}, "requestContext": {"requestId": "r1"}},
+        {"path": "/v1/delegation/redeem", "headers": {}, "requestContext": {"requestId": "r1"}},
         None,
     )
     assert out["statusCode"] == 401
-    assert "Missing or invalid delegate token" in out["body"]
+    assert "Missing requestCode" in out["body"]

@@ -468,23 +468,23 @@ def test_credentials_exec_list_sessions(monkeypatch, tmp_path: Path) -> None:
     assert {"agent-a", "agent-b"}.issubset(ids)
 
 
-def test_credentials_exec_bootstrap_ephemeral(monkeypatch, tmp_path: Path) -> None:
+def test_credentials_exec_delegation_flow(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
     calls: list[str] = []
 
     def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
-        del headers, timeout_seconds
+        del timeout_seconds
         calls.append(url)
-        if url.endswith("/v1/delegate-token"):
+        if url.endswith("/v1/delegation/requests"):
             assert json.loads(body.decode("utf-8"))["ttlSeconds"] == 600
             return (
                 200,
                 {},
                 json.dumps(
                     {
-                        "kind": "agent-enablement.delegate-token.v1",
-                        "delegateToken": "a.b.c",
+                        "kind": "agent-enablement.delegation.request.v1",
+                        "requestCode": "req-1",
                         "expiresAt": "2099-01-01T00:00:00Z",
                         "scopes": ["taskboard", "messages"],
                         "ephemeralUsername": "ephem-1",
@@ -492,7 +492,12 @@ def test_credentials_exec_bootstrap_ephemeral(monkeypatch, tmp_path: Path) -> No
                     }
                 ).encode("utf-8"),
             )
-        if url.endswith("/v1/credentials/exchange"):
+        if url.endswith("/v1/delegation/approvals"):
+            assert headers.get("authorization", "").startswith("Bearer ")
+            assert json.loads(body.decode("utf-8")) == {"requestCode": "req-1"}
+            return (200, {}, json.dumps({"kind": "agent-enablement.delegation.approval.v1", "status": "approved"}).encode("utf-8"))
+        if url.endswith("/v1/delegation/redeem"):
+            assert json.loads(body.decode("utf-8")) == {"requestCode": "req-1"}
             exp = "2099-01-01T00:00:00+00:00"
             return (
                 200,
@@ -531,7 +536,7 @@ def test_credentials_exec_bootstrap_ephemeral(monkeypatch, tmp_path: Path) -> No
 
     monkeypatch.setattr("enabler_cli.mcp_server._http_post_json", _fake_post_json)
     mcp = EnablerMcp(agent_id="agent-a")
-    resp = mcp.handle_request(
+    req = mcp.handle_request(
         {
             "jsonrpc": "2.0",
             "id": 21,
@@ -539,24 +544,58 @@ def test_credentials_exec_bootstrap_ephemeral(monkeypatch, tmp_path: Path) -> No
             "params": {
                 "name": "credentials.exec",
                 "arguments": {
-                    "action": "bootstrap_ephemeral",
-                    "args": {"targetAgentId": "ephem-1", "switchToEphemeral": True},
+                    "action": "delegation_request",
+                    "args": {"ttlSeconds": 600},
                 },
             },
         }
     )
-    assert isinstance(resp, dict)
-    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert isinstance(req, dict)
+    req_payload = json.loads(req["result"]["content"][0]["text"])
+    assert req_payload["request"]["requestCode"] == "req-1"
+
+    approve = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {"action": "delegation_approve", "args": {"requestCode": "req-1"}},
+            },
+        }
+    )
+    assert isinstance(approve, dict)
+    approve_payload = json.loads(approve["result"]["content"][0]["text"])
+    assert approve_payload["approval"]["status"] == "approved"
+
+    redeem = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {
+                    "action": "delegation_redeem",
+                    "args": {"requestCode": "req-1", "targetAgentId": "ephem-1", "switchToTarget": True},
+                },
+            },
+        }
+    )
+    assert isinstance(redeem, dict)
+    parsed = json.loads(redeem["result"]["content"][0]["text"])
     assert parsed["targetAgentId"] == "ephem-1"
     assert parsed["switched"] is True
     assert parsed["currentDefaultAgentId"] == "ephem-1"
     assert calls == [
-        "https://api.example.com/prod/v1/delegate-token",
-        "https://api.example.com/prod/v1/credentials/exchange",
+        "https://api.example.com/prod/v1/delegation/requests",
+        "https://api.example.com/prod/v1/delegation/approvals",
+        "https://api.example.com/prod/v1/delegation/redeem",
     ]
 
 
-def test_credentials_exec_bootstrap_ephemeral_requires_named(monkeypatch, tmp_path: Path) -> None:
+def test_credentials_exec_delegation_approve_requires_named(monkeypatch, tmp_path: Path) -> None:
     cache = _session_cache(tmp_path, monkeypatch, agent_id="agent-e")
     payload = json.loads(cache.read_text(encoding="utf-8"))
     payload["principal"]["profileType"] = "ephemeral"
@@ -570,9 +609,9 @@ def test_credentials_exec_bootstrap_ephemeral_requires_named(monkeypatch, tmp_pa
             "method": "tools/call",
             "params": {
                 "name": "credentials.exec",
-                "arguments": {"action": "bootstrap_ephemeral", "args": {"targetAgentId": "ephem-2"}},
+                "arguments": {"action": "delegation_approve", "args": {"requestCode": "req-1"}},
             },
         }
     )
     assert isinstance(resp, dict)
-    assert resp["error"]["data"]["message"].startswith("Only named agent profiles may mint delegate tokens")
+    assert resp["error"]["data"]["message"].startswith("Only named agent profiles may approve delegation requests")
