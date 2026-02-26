@@ -44,7 +44,6 @@ Contains issued STS credentials and runtime references, including:
 
 Skills are sourced directly from root `skills/` folders:
 - `skills/enabler-mcp-cli/SKILL.md`
-- `skills/ssm-key-access/SKILL.md`
 - `skills/provisioning-cfn-mode/SKILL.md`
 
 ## Operator Shortcuts

@@ -253,7 +253,6 @@ Ephemeral profiles (`profileType=ephemeral`) are hard-blocked from `agentAWSWork
 Agent skills are now sourced directly from project root:
 
 - `skills/enabler-mcp-cli/SKILL.md`
-- `skills/ssm-key-access/SKILL.md`
 - `skills/provisioning-cfn-mode/SKILL.md`
 
 ## Tests
