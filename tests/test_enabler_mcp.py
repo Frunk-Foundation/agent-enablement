@@ -127,6 +127,39 @@ def test_tools_call_help_shortlinks_create_includes_target_url_example(monkeypat
     assert "targetUrl" in text
 
 
+def test_tools_call_help_examples_use_current_argument_names(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+
+    credentials_help = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 216,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "credentials.exec", "action": "delegation_request"}},
+        }
+    )
+    assert isinstance(credentials_help, dict)
+    credentials_payload = json.loads(credentials_help["result"]["content"][0]["text"])
+    credentials_text = str(credentials_payload["text"])
+    assert "scopes" in credentials_text
+    assert "\"scope\"" not in credentials_text
+
+    taskboard_help = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 217,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "taskboard.exec", "action": "create"}},
+        }
+    )
+    assert isinstance(taskboard_help, dict)
+    taskboard_payload = json.loads(taskboard_help["result"]["content"][0]["text"])
+    taskboard_text = str(taskboard_payload["text"])
+    assert "\"name\"" in taskboard_text
+    assert "\"title\"" not in taskboard_text
+
+
 def test_tools_call_help_rejects_action_without_tool(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch)
     mcp = EnablerMcp(agent_id="agent-a")
