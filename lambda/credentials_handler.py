@@ -347,7 +347,7 @@ def _delegation_expired(item: dict[str, Any]) -> bool:
 
 
 def _delegation_item_to_payload(item: dict[str, Any], *, request_id: str) -> dict[str, Any]:
-    scopes = sorted(list(profile_ddb_str_list(item.get("scopes"))))
+    scopes = sorted(list(profile_ddb_str_list(item, "scopes")))
     return {
         "kind": "agent-enablement.delegation.status.v1",
         "requestId": request_id,
