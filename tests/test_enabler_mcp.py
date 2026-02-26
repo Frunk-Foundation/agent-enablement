@@ -214,6 +214,80 @@ def test_credentials_exec_ensure(monkeypatch, tmp_path: Path) -> None:
     assert parsed["agentId"] == "agent-a"
     assert parsed["set"] == "agentEnablement"
     assert parsed["ready"] is True
+    assert parsed["refreshed"] is False
+
+
+def test_credentials_exec_ensure_force_refresh_rewrites_artifacts(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
+    mcp = EnablerMcp(agent_id="agent-a")
+
+    refreshed_doc = {
+        "kind": "agent-enablement.credentials.v2",
+        "expiresAt": "2099-01-01T00:00:00+00:00",
+        "principal": {"sub": "sub-1", "username": "agent-a", "profileType": "named"},
+        "credentials": {
+            "accessKeyId": "ASIAREFRESH",
+            "secretAccessKey": "secret",
+            "sessionToken": "token",
+            "expiration": "2099-01-01T00:00:00+00:00",
+        },
+        "references": {
+            "awsRegion": "us-east-2",
+            "files": {"publicBaseUrl": "https://d222222abcdef8.cloudfront.net/"},
+        },
+        "credentialSets": {
+            "agentEnablement": {
+                "credentials": {
+                    "accessKeyId": "ASIAREFRESH",
+                    "secretAccessKey": "secret",
+                    "sessionToken": "token",
+                    "expiration": "2099-01-01T00:00:00+00:00",
+                },
+                "references": {
+                    "awsRegion": "us-east-2",
+                    "files": {"publicBaseUrl": "https://d222222abcdef8.cloudfront.net/"},
+                },
+                "cognitoTokens": {
+                    "idToken": "a.b.c",
+                    "accessToken": "d.e.f",
+                    "refreshToken": "refresh",
+                },
+            }
+        },
+        "cognitoTokens": {
+            "idToken": "a.b.c",
+            "accessToken": "d.e.f",
+            "refreshToken": "refresh",
+        },
+    }
+    refresh_calls: list[dict] = []
+
+    def _fake_fetch(_g, *, current_doc=None):
+        refresh_calls.append({"current_doc": bool(current_doc)})
+        return (json.dumps(refreshed_doc), refreshed_doc)
+
+    monkeypatch.setattr("enabler_cli.mcp_server._fetch_credentials_doc_text_for_cache", _fake_fetch)
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 223,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {
+                    "action": "ensure",
+                    "args": {"set": "agentEnablement", "requireIdToken": True, "forceRefresh": True},
+                },
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["kind"] == "enabler.creds.ensure.v1"
+    assert parsed["refreshed"] is True
+    assert parsed["cachePath"].endswith("/sessions/agent-a/session.json")
+    assert parsed["manifest"]["paths"]["stsDefaultEnv"].endswith("/sessions/agent-a/sts.env")
+    assert len(refresh_calls) == 1
 
 
 def test_taskboard_tool_requires_cognito_id_token(monkeypatch, tmp_path: Path) -> None:

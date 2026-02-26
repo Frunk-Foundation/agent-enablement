@@ -67,3 +67,4 @@ just test
 - Codex MCP can start unbound (no `--agent-id`). In unbound mode, bootstrap via `credentials.exec` delegation request/approve/redeem, then runtime tools become available.
 - MCP runtime switching (`credentials.exec` + `action=set_agentid`) changes only the default context for future calls; async jobs must pin enqueue-time `agentId` to avoid identity drift.
 - MCP has a built-in discovery path now: call top-level `help` or any `*.exec` with `action=help`; in unbound mode, help still works so bootstrap guidance is always available.
+- After credentials schema changes deploy, run `credentials.exec` with `action=ensure` and `args.forceRefresh=true` to pull new fields immediately instead of waiting for expiry-driven refresh.

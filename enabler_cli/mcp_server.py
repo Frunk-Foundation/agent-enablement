@@ -26,6 +26,8 @@ from .runtime_core import (
     _credentials_expires_at,
     _credentials_freshness,
     _credentials_location_manifest,
+    _fetch_credentials_doc_text_for_cache,
+    _load_json_object,
     _namespace,
     _resolve_runtime_credentials_doc,
     _select_runtime_agent_doc,
@@ -397,6 +399,26 @@ class EnablerMcp:
         )
         return {"cachePath": str(path), "manifest": manifest}
 
+    def _force_refresh_credentials(self, *, g: GlobalOpts) -> dict[str, Any]:
+        current_doc: dict[str, Any] | None = None
+        cache_path = _credentials_cache_file(g)
+        if cache_path.exists():
+            current_doc = _load_json_object(
+                raw=cache_path.read_text(encoding="utf-8"),
+                label=f"cached credentials JSON at {cache_path}",
+            )
+        raw_text, doc = _fetch_credentials_doc_text_for_cache(g, current_doc=current_doc)
+        path = _write_credentials_cache_from_text(g=g, raw_text=raw_text)
+        sts_env_paths = _write_sts_env_files_from_doc(g=g, root_doc=doc)
+        cognito_env_path = str(_write_cognito_env_file_from_doc(g=g, root_doc=doc))
+        manifest = _credentials_location_manifest(
+            g=g,
+            doc=doc,
+            sts_env_paths=sts_env_paths,
+            cognito_env_path=cognito_env_path,
+        )
+        return {"doc": doc, "cachePath": str(path), "manifest": manifest}
+
     def _profile_type_from_doc(self, doc: dict[str, Any]) -> str:
         principal = doc.get("principal")
         if isinstance(principal, dict):
@@ -438,6 +460,18 @@ class EnablerMcp:
 
         return {"code": code, "message": msg, "retryable": retryable}
 
+    def _validate_doc_requirements(
+        self,
+        *,
+        doc: dict[str, Any],
+        required_set: str | None = None,
+        require_id_token: bool = False,
+    ) -> None:
+        if required_set:
+            _credential_set_doc(root_doc=doc, set_name=required_set)
+        if require_id_token and not self._id_token_from_doc(doc):
+            raise UsageError("MISSING_ID_TOKEN: cached credentials missing cognitoTokens.idToken")
+
     def _cmd_json(self, func: Callable[[argparse.Namespace, GlobalOpts], int], *, g: GlobalOpts, **kwargs: Any) -> Any:
         args = argparse.Namespace(**kwargs)
         out_buf = io.StringIO()
@@ -466,7 +500,7 @@ class EnablerMcp:
                 "brief": "Credential lifecycle actions (bootstrap, switching, delegation).",
                 "actions": {
                     "help": "Describe credential actions and examples.",
-                    "ensure": "Validate required credential set/token availability.",
+                    "ensure": "Validate required credential set/token availability; set args.forceRefresh=true to force broker refresh and rewrite artifacts.",
                     "set_agentid": "Switch default runtime identity to another local session.",
                     "list_sessions": "List local session ids available for switching.",
                     "delegation_request": "Create request code for named-agent approval.",
@@ -698,27 +732,43 @@ class EnablerMcp:
         agent_id = g.agent_id
         set_name = str(args.get("set") or "").strip()
         require_id_token = bool(args.get("requireIdToken", False))
-        doc = self._ensure_doc(
-            g=g,
-            required_set=set_name if set_name else None,
-            require_id_token=require_id_token,
-        )
+        force_refresh = bool(args.get("forceRefresh", False))
+        refresh_info: dict[str, Any] | None = None
+        if force_refresh:
+            refresh_info = self._force_refresh_credentials(g=g)
+            doc = refresh_info["doc"]
+            self._validate_doc_requirements(
+                doc=doc,
+                required_set=set_name if set_name else None,
+                require_id_token=require_id_token,
+            )
+        else:
+            doc = self._ensure_doc(
+                g=g,
+                required_set=set_name if set_name else None,
+                require_id_token=require_id_token,
+            )
         selected = _select_runtime_agent_doc(doc)
         if set_name:
             selected = _credential_set_doc(root_doc=doc, set_name=set_name)
         process = _credential_process_doc_to_output(selected)
         expires_at = _credentials_expires_at(doc)
         freshness, seconds_to_expiry = _credentials_freshness(expires_at)
-        return {
+        payload: dict[str, Any] = {
             "kind": "enabler.creds.ensure.v1",
             "agentId": agent_id,
             "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "set": set_name or "agentEnablement",
             "expiration": process.get("Expiration", ""),
             "ready": True,
+            "refreshed": force_refresh,
             "artifactRoot": str(_artifact_root(g)),
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
         }
+        if refresh_info is not None:
+            payload["cachePath"] = str(refresh_info["cachePath"])
+            payload["manifest"] = refresh_info["manifest"]
+        return payload
 
     def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "help":

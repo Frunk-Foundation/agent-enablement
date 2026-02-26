@@ -77,6 +77,7 @@ Runtime identity switching is supported without restart via MCP tool `credential
 
 Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
 - `action=ensure`: ensure credentials are present/fresh and return readiness metadata.
+  - pass `args.forceRefresh=true` to force broker refresh immediately and rewrite local artifacts (`session.json`, `sts*.env`, `cognito.env`).
 - `action=list_sessions`: enumerate managed local agent sessions.
 - `action=set_agentid`: switch default runtime identity to another existing local session.
 - `action=delegation_request`: create short-code delegation request.
