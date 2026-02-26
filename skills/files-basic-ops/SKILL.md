@@ -1,34 +1,36 @@
-# Files Basic Ops
+# Share Basic Ops
 
 ## Purpose
-Upload a local file via MCP and return shareable file metadata.
+Upload a local file or folder via MCP and return shareable metadata.
 
 ## When To Use
-Use when you need to share a file with another agent or human without hand-writing S3 commands.
+Use when you need to share one file or a recursive folder (for multi-page static sites) without hand-writing S3 commands.
 
 ## Inputs
 - Fresh credentials from `./enabler-creds summary`.
 - Running `./enabler-mcp` process.
-- Local file path.
+- Local file path or folder path.
 
 ## Workflow
-Use MCP tool `files.exec` with `action=share`:
-1. Provide `args.filePath`.
-2. Optionally provide `args.name` override.
-3. Consume returned metadata (`s3Uri`, `publicUrl`, `bucket`, `key`).
+Use MCP tool `share.exec`:
+1. For one file, call `action=file` with `args.filePath` and optional `args.name`.
+2. For recursive folder upload, call `action=folder` with `args.folderPath` and optional `args.rootDocument`.
+3. Consume returned metadata (`publicUrl` for file uploads, or `siteBaseUrl`/`rootUrl`/`files[]` manifest for folder uploads).
 4. Optional long-running mode: include `async=true` and poll `ops.result`.
 
 ## Outputs
-- Default response payload includes:
+- File upload payload includes:
   - `s3Uri`
-  - `publicUrl` (when public base URL is configured)
+  - `publicUrl`
   - `bucket`, `key`
+- Folder upload payload includes:
+  - `prefix`, `siteBaseUrl`, `rootUrl`, `fileCount`
+  - `files[]` entries with `relativePath`, `s3Uri`, `publicUrl`, `key`
 
 ## Guardrails
 - Do not hardcode generated key paths.
-- `publicUrl` can be empty if no public files base URL is configured; always support `s3Uri`.
+- Folder upload preserves relative paths under one generated prefix (supports static-site assets/pages).
 - Treat shared URLs as sensitive depending on content.
 
 ## References
 - `../../README.md`
-

@@ -1945,12 +1945,7 @@ def _s3_upload_extra_args_for_path(path: Path) -> dict[str, str]:
     return extra_args
 
 
-def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
-    _require_boto3()
-    local_path = Path(str(args.file_path)).expanduser().resolve()
-    if not local_path.exists() or not local_path.is_file():
-        raise UsageError(f"file not found: {local_path}")
-
+def _resolve_share_runtime(args: argparse.Namespace, g: GlobalOpts) -> tuple[Any, str, str, str]:
     root_doc = _resolve_runtime_credentials_doc(args, g)
     active_doc = _select_runtime_agent_doc(root_doc)
 
@@ -1962,19 +1957,31 @@ def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
         raise UsageError("missing files public base url in bundle connection.json (run 'enabler bundle' first)")
 
     sess, _refs, _session_region = _issued_session_from_doc(doc=active_doc)
-
     bucket, allowed_prefix = _s3_upload_scope_from_grants(active_doc)
     if not bucket or not allowed_prefix:
         raise UsageError("missing runtime S3 upload scope in credentials grants")
+    return sess, bucket, allowed_prefix, public_base_url
+
+
+def _upload_local_file_to_s3(*, s3: Any, local_path: Path, bucket: str, key: str) -> None:
+    extra_args = _s3_upload_extra_args_for_path(local_path)
+    s3.upload_file(str(local_path), bucket, key, ExtraArgs=extra_args)
+
+
+def cmd_share_file(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    local_path = Path(str(args.file_path)).expanduser().resolve()
+    if not local_path.exists() or not local_path.is_file():
+        raise UsageError(f"file not found: {local_path}")
+    sess, bucket, allowed_prefix, public_base_url = _resolve_share_runtime(args, g)
 
     object_uuid = uuid4_base58_22()
     filename = str(args.name or local_path.name or "file").strip()
     key = f"{allowed_prefix.rstrip('/')}/{object_uuid}/{filename}".lstrip("/")
-    extra_args = _s3_upload_extra_args_for_path(local_path)
 
     s3 = sess.client("s3")
     try:
-        s3.upload_file(str(local_path), bucket, key, ExtraArgs=extra_args)
+        _upload_local_file_to_s3(s3=s3, local_path=local_path, bucket=bucket, key=key)
     except Exception as e:
         raise OpError(f"failed to upload file to s3://{bucket}/{key}: {e}") from e
 
@@ -1984,7 +1991,7 @@ def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
     if bool(getattr(args, "json_output", False)):
         _print_json(
             {
-                "kind": "enabler.files.upload.v1",
+                "kind": "enabler.share.file-upload.v1",
                 "s3Uri": s3_uri,
                 "publicUrl": public_url,
                 "publicBaseUrl": public_base_url,
@@ -1995,6 +2002,84 @@ def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
         )
     else:
         sys.stdout.write(public_url + "\n")
+    return 0
+
+
+def _is_hidden_relative_path(path: Path) -> bool:
+    return any(part.startswith(".") for part in path.parts)
+
+
+def cmd_share_folder(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    folder_path = Path(str(args.folder_path)).expanduser().resolve()
+    if not folder_path.exists() or not folder_path.is_dir():
+        raise UsageError(f"folder not found: {folder_path}")
+
+    include_hidden = bool(getattr(args, "include_hidden", False))
+    follow_symlinks = bool(getattr(args, "follow_symlinks", False))
+    root_document = str(getattr(args, "root_document", "index.html") or "index.html").strip()
+
+    sess, bucket, allowed_prefix, public_base_url = _resolve_share_runtime(args, g)
+    s3 = sess.client("s3")
+
+    files: list[Path] = []
+    for root, dirnames, filenames in os.walk(folder_path, followlinks=follow_symlinks):
+        root_path = Path(root)
+        if not include_hidden:
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for filename in filenames:
+            if not include_hidden and filename.startswith("."):
+                continue
+            local_path = root_path / filename
+            if local_path.is_symlink() and not follow_symlinks:
+                continue
+            rel_path = local_path.relative_to(folder_path)
+            if not include_hidden and _is_hidden_relative_path(rel_path):
+                continue
+            files.append(local_path)
+
+    if not files:
+        raise UsageError(f"no files found in folder: {folder_path}")
+
+    upload_id = uuid4_base58_22()
+    key_prefix = f"{allowed_prefix.rstrip('/')}/{upload_id}".lstrip("/")
+    uploaded: list[dict[str, str]] = []
+    for local_path in sorted(files, key=lambda p: str(p.relative_to(folder_path)).lower()):
+        rel_path = local_path.relative_to(folder_path).as_posix()
+        key = f"{key_prefix}/{rel_path}".lstrip("/")
+        try:
+            _upload_local_file_to_s3(s3=s3, local_path=local_path, bucket=bucket, key=key)
+        except Exception as e:
+            raise OpError(f"failed to upload file to s3://{bucket}/{key}: {e}") from e
+        uploaded.append(
+            {
+                "relativePath": rel_path,
+                "key": key,
+                "s3Uri": f"s3://{bucket}/{key}",
+            }
+        )
+
+    site_base_url = f"{public_base_url.rstrip('/')}/{key_prefix}/"
+    root_url = ""
+    for item in uploaded:
+        item["publicUrl"] = f"{public_base_url.rstrip('/')}/{item['key'].lstrip('/')}"
+        if item["relativePath"] == root_document:
+            root_url = item["publicUrl"]
+
+    _print_json(
+        {
+            "kind": "enabler.share.folder-upload.v1",
+            "bucket": bucket,
+            "prefix": key_prefix,
+            "publicBaseUrl": public_base_url,
+            "siteBaseUrl": site_base_url,
+            "rootDocument": root_document,
+            "rootUrl": root_url,
+            "fileCount": len(uploaded),
+            "files": uploaded,
+        },
+        pretty=g.pretty,
+    )
     return 0
 
 
@@ -2616,7 +2701,7 @@ handoff_admin_app = typer.Typer(
     no_args_is_help=True,
 )
 messages_app = typer.Typer(help="Message helpers (issued STS creds, no profile)", no_args_is_help=True)
-files_app = typer.Typer(help="File share helpers", no_args_is_help=True)
+share_app = typer.Typer(help="Share helpers (file and folder upload)", no_args_is_help=True)
 shortlinks_app = typer.Typer(help="Shortlink helpers", no_args_is_help=True)
 taskboard_app = typer.Typer(
     help="Taskboard helpers (default: human-readable output; use --json for raw API responses)",
@@ -2624,7 +2709,7 @@ taskboard_app = typer.Typer(
 )
 
 # Agent CLI surface.
-app.add_typer(files_app, name="files")
+app.add_typer(share_app, name="share")
 app.add_typer(messages_app, name="messages")
 app.add_typer(shortlinks_app, name="shortlinks")
 app.add_typer(taskboard_app, name="taskboard")
@@ -3166,17 +3251,31 @@ def agent_bundle(
     )
 
 
-@files_app.command(
-    "share",
-    help="Upload a file and return the external HTTPS URL (use --json for S3 metadata).",
+@share_app.command(
+    "file",
+    help="Upload one file and return the external HTTPS URL (use --json for S3 metadata).",
 )
-def files_share(
+def share_file(
     ctx: typer.Context,
     file_path: str = typer.Argument(..., help="Local file path to upload"),
     name: str | None = typer.Option(None, "--name", help="Optional object filename override"),
     json_output: bool = typer.Option(False, "--json", help="Print JSON details instead of plain text output"),
 ) -> None:
-    _invoke_from_locals(ctx, cmd_files_share, locals())
+    _invoke_from_locals(ctx, cmd_share_file, locals())
+
+
+@share_app.command(
+    "folder",
+    help="Upload a folder recursively under one shared key prefix and return a manifest JSON.",
+)
+def share_folder(
+    ctx: typer.Context,
+    folder_path: str = typer.Argument(..., help="Local folder path to upload recursively"),
+    include_hidden: bool = typer.Option(False, "--include-hidden", help="Include hidden files/directories"),
+    follow_symlinks: bool = typer.Option(False, "--follow-symlinks", help="Follow symbolic links during traversal"),
+    root_document: str = typer.Option("index.html", "--root-document", help="Root document used to compute rootUrl"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_share_folder, locals())
 
 
 @messages_app.command("send", help="Send a direct message event via EventBridge.")

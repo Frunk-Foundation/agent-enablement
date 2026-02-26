@@ -62,7 +62,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "taskboard.exec",
         "messages.exec",
         "shortlinks.exec",
-        "files.exec",
+        "share.exec",
         "ops.result",
     }
 

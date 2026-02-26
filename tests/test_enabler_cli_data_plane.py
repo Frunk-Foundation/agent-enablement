@@ -13,7 +13,8 @@ from enabler_cli.apps.agent_admin_cli import (
     _taskboard_endpoint_for_args,
     cmd_agent_credential_process,
     cmd_agent_credentials,
-    cmd_files_share,
+    cmd_share_folder,
+    cmd_share_file,
     cmd_messages_ack,
     cmd_messages_recv,
     cmd_messages_send,
@@ -1228,7 +1229,7 @@ def test_cmd_shortlinks_create_requires_redirect_base_url(monkeypatch, tmp_path)
         cmd_shortlinks_create(args, _g(cache_path=str(cache_path)))
 
 
-def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_uploads_and_returns_public_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     cache_path = tmp_path / ".enabler" / "credentials.json"
@@ -1283,7 +1284,7 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
         json_output=False,
     )
 
-    assert cmd_files_share(args, _g(cache_path=str(cache_path))) == 0
+    assert cmd_share_file(args, _g(cache_path=str(cache_path))) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines == [
         "https://files.example.net/uploads/u-1/1111111111111111111111/payload.txt",
@@ -1294,7 +1295,7 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
     assert uploaded["extra_args"] == {"ContentType": "text/plain"}
 
 
-def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_json_output(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1351,9 +1352,9 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
         json_output=True,
     )
 
-    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["kind"] == "enabler.files.upload.v1"
+    assert payload["kind"] == "enabler.share.file-upload.v1"
     assert payload["s3Uri"] == "s3://upload-bucket/uploads/u-1/1111111111111111111111/renamed.txt"
     assert payload["publicUrl"] == "https://files.example.net/uploads/u-1/1111111111111111111111/renamed.txt"
     assert payload["publicBaseUrl"] == "https://files.example.net/"
@@ -1362,7 +1363,7 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
     assert uploaded["extra_args"] == {"ContentType": "text/plain"}
 
 
-def test_cmd_files_share_unknown_extension_falls_back_to_octet_stream(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_unknown_extension_falls_back_to_octet_stream(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.unknownext"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1409,12 +1410,12 @@ def test_cmd_files_share_unknown_extension_falls_back_to_octet_stream(monkeypatc
         name=None,
         json_output=False,
     )
-    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
     assert uploaded["extra_args"] == {"ContentType": "application/octet-stream"}
     assert capsys.readouterr().out.strip().startswith("https://files.example.net/uploads/u-1/")
 
 
-def test_cmd_files_share_sets_content_encoding_when_detected(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_sets_content_encoding_when_detected(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.html.gz"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1465,12 +1466,12 @@ def test_cmd_files_share_sets_content_encoding_when_detected(monkeypatch, tmp_pa
         name=None,
         json_output=False,
     )
-    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
     assert uploaded["extra_args"] == {"ContentType": "text/html", "ContentEncoding": "gzip"}
     assert capsys.readouterr().out.strip().startswith("https://files.example.net/uploads/u-1/")
 
 
-def test_cmd_files_share_requires_credentials_region(monkeypatch, tmp_path):
+def test_cmd_share_file_requires_credentials_region(monkeypatch, tmp_path):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1495,10 +1496,10 @@ def test_cmd_files_share_requires_credentials_region(monkeypatch, tmp_path):
         json_output=False,
     )
     with pytest.raises(UsageError, match="missing awsRegion in credentials references"):
-        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+        cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
 
 
-def test_cmd_files_share_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1547,14 +1548,14 @@ def test_cmd_files_share_uploads_then_fails_without_public_base_url(monkeypatch,
         json_output=False,
     )
     with pytest.raises(OpError, match="missing files public base url in credentials references"):
-        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+        cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
     assert capsys.readouterr().out.strip() == ""
     assert uploaded["bucket"] == "upload-bucket"
     assert uploaded["key"] == "uploads/u-1/1111111111111111111111/payload.txt"
     assert uploaded["extra_args"] == {"ContentType": "text/plain"}
 
 
-def test_cmd_files_share_json_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
+def test_cmd_share_file_json_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1599,5 +1600,116 @@ def test_cmd_files_share_json_uploads_then_fails_without_public_base_url(monkeyp
         json_output=True,
     )
     with pytest.raises(OpError, match="missing files public base url in credentials references"):
-        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+        cmd_share_file(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
     assert capsys.readouterr().out.strip() == ""
+
+
+def test_cmd_share_folder_uploads_recursive_tree_under_one_prefix(monkeypatch, tmp_path, capsys):
+    folder = tmp_path / "site"
+    (folder / "nested").mkdir(parents=True, exist_ok=True)
+    (folder / "index.html").write_text("<h1>Home</h1>", encoding="utf-8")
+    (folder / "nested" / "page.html").write_text("<h1>Page</h1>", encoding="utf-8")
+    (folder / ".hidden.txt").write_text("ignore", encoding="utf-8")
+
+    creds_doc = {
+        "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
+        "credentials": {
+            "accessKeyId": "AKIA_TEST",
+            "secretAccessKey": "secret",
+            "sessionToken": "token",
+            "expiration": "2099-01-01T00:00:00Z",
+        },
+        "grants": [
+            {
+                "service": "s3",
+                "resources": ["arn:aws:s3:::upload-bucket/uploads/u-1/*"],
+            }
+        ],
+    }
+    uploaded: list[dict[str, object]] = []
+
+    class _FakeS3:
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
+            uploaded.append(
+                {
+                    "local_path": str(local_path),
+                    "bucket": bucket,
+                    "key": key,
+                    "extra_args": dict(ExtraArgs or {}),
+                }
+            )
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def client(self, name):
+            assert name == "s3"
+            return _FakeS3()
+
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli.boto3",
+        type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
+    )
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
+
+    args = argparse.Namespace(
+        folder_path=str(folder),
+        include_hidden=False,
+        follow_symlinks=False,
+        root_document="index.html",
+    )
+    assert cmd_share_folder(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["kind"] == "enabler.share.folder-upload.v1"
+    assert payload["fileCount"] == 2
+    assert payload["prefix"] == "uploads/u-1/1111111111111111111111"
+    assert payload["siteBaseUrl"] == "https://files.example.net/uploads/u-1/1111111111111111111111/"
+    assert payload["rootUrl"] == "https://files.example.net/uploads/u-1/1111111111111111111111/index.html"
+    rel_paths = sorted(item["relativePath"] for item in payload["files"])
+    assert rel_paths == ["index.html", "nested/page.html"]
+    uploaded_keys = sorted(item["key"] for item in uploaded)
+    assert uploaded_keys == [
+        "uploads/u-1/1111111111111111111111/index.html",
+        "uploads/u-1/1111111111111111111111/nested/page.html",
+    ]
+
+
+def test_cmd_share_folder_fails_when_no_files(monkeypatch, tmp_path):
+    folder = tmp_path / "empty"
+    folder.mkdir(parents=True, exist_ok=True)
+    creds_doc = {
+        "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
+        "credentials": {
+            "accessKeyId": "AKIA_TEST",
+            "secretAccessKey": "secret",
+            "sessionToken": "token",
+            "expiration": "2099-01-01T00:00:00Z",
+        },
+        "grants": [
+            {
+                "service": "s3",
+                "resources": ["arn:aws:s3:::upload-bucket/uploads/u-1/*"],
+            }
+        ],
+    }
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+
+    args = argparse.Namespace(
+        folder_path=str(folder),
+        include_hidden=False,
+        follow_symlinks=False,
+        root_document="index.html",
+    )
+    with pytest.raises(UsageError, match="no files found in folder"):
+        cmd_share_folder(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))

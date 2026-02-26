@@ -17,7 +17,7 @@ This repository now uses a credentials + MCP runtime model:
 
 ### Runtime
 - `./enabler-creds`: `summary`, `status`, `paths`, `refresh`, `credential-process`
-- `./enabler-mcp`: MCP stdio server for taskboard/messages/files/shortlinks
+- `./enabler-mcp`: MCP stdio server for taskboard/messages/share/shortlinks
 - `./enabler`: retired shim
 
 ### Admin
@@ -44,7 +44,7 @@ Contains issued STS credentials and runtime references, including:
 Skills are sourced directly from root `skills/` folders:
 - `skills/get-started/SKILL.md`
 - `skills/messages-basic-ops/SKILL.md`
-- `skills/files-basic-ops/SKILL.md`
+- `skills/files-basic-ops/SKILL.md` (share file/folder usage)
 - `skills/shortlinks/SKILL.md`
 - `skills/taskboard-basics/SKILL.md`
 - `skills/ssm-key-access/SKILL.md`

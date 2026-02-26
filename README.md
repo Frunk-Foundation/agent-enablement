@@ -3,7 +3,7 @@
 This repo provides an agent-first runtime flow with split credential and MCP surfaces:
 
 - `./enabler-creds`: credential lifecycle (`summary`, `status`, `paths`, `refresh`, `credential-process`)
-- `./enabler-mcp`: agent MCP server (taskboard/messages/files/shortlinks + credential visibility)
+- `./enabler-mcp`: agent MCP server (taskboard/messages/share/shortlinks + credential visibility)
 - `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`)
 - `./enabler`: retired; prints migration guidance and exits non-zero
 
@@ -196,10 +196,12 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
   - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
   - `taskboard.exec` (`action=help|create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=help|send|recv|ack`)
-  - `files.exec` (`action=help|share`)
+  - `share.exec` (`action=help|file|folder`)
   - `ops.result` (for async polling when `async=true`)
 
-`files.exec` `action=share` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type. If that reference is missing, upload occurs but the command fails with a configuration error.
+`share.exec` `action=file` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type.
+
+`share.exec` `action=folder` uploads recursively under one shared key prefix (preserving relative paths) and returns a manifest with `siteBaseUrl`, `rootUrl`, and per-file URLs. This supports static-site style uploads with multiple pages/assets under one prefix.
 
 ## Admin CLI
 
@@ -234,7 +236,7 @@ Agent skills are now sourced directly from project root:
 
 - `skills/get-started/SKILL.md`
 - `skills/messages-basic-ops/SKILL.md`
-- `skills/files-basic-ops/SKILL.md`
+- `skills/files-basic-ops/SKILL.md` (uses `share.exec` for file/folder upload workflows)
 - `skills/shortlinks/SKILL.md`
 - `skills/taskboard-basics/SKILL.md`
 - `skills/ssm-key-access/SKILL.md`
