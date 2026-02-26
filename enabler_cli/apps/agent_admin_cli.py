@@ -257,30 +257,6 @@ def _files_public_base_url_from_runtime_refs(args: argparse.Namespace, g: Global
     return ""
 
 
-def _files_share_url_ttl_seconds() -> int:
-    raw = str(os.environ.get("ENABLER_FILES_SHARE_URL_TTL_SECONDS") or "").strip()
-    try:
-        ttl = int(raw) if raw else 3600
-    except Exception:
-        ttl = 3600
-    return max(60, min(ttl, 604800))
-
-
-def _files_presigned_url(*, s3_client: Any, bucket: str, key: str) -> str:
-    ttl_seconds = _files_share_url_ttl_seconds()
-    try:
-        return str(
-            s3_client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket, "Key": key},
-                ExpiresIn=ttl_seconds,
-            )
-            or ""
-        ).strip()
-    except Exception as e:
-        raise OpError(f"failed to create presigned URL for s3://{bucket}/{key}: {e}") from e
-
-
 def _parse_iso8601(val: str) -> datetime | None:
     s = (val or "").strip()
     if not s:
@@ -1854,9 +1830,12 @@ def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
         raise OpError(f"failed to upload file to s3://{bucket}/{key}: {e}") from e
 
     s3_uri = f"s3://{bucket}/{key}"
-    public_url = f"{public_base_url.rstrip('/')}/{key.lstrip('/')}" if public_base_url else ""
-    if not public_url:
-        public_url = _files_presigned_url(s3_client=s3, bucket=bucket, key=key)
+    if not public_base_url:
+        raise OpError(
+            "missing files public base url in credentials references; "
+            f"uploaded to {s3_uri}"
+        )
+    public_url = f"{public_base_url.rstrip('/')}/{key.lstrip('/')}"
 
     if bool(getattr(args, "json_output", False)):
         _print_json(

@@ -7,6 +7,7 @@ import pytest
 
 from enabler_cli.apps.agent_admin_cli import (
     GlobalOpts,
+    OpError,
     UsageError,
     _resolve_runtime_credentials_doc,
     _taskboard_endpoint_for_args,
@@ -1381,7 +1382,7 @@ def test_cmd_files_share_requires_credentials_region(monkeypatch, tmp_path):
         cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
 
 
-def test_cmd_files_share_falls_back_to_s3_uri_without_public_base_url(monkeypatch, tmp_path, capsys):
+def test_cmd_files_share_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1409,13 +1410,6 @@ def test_cmd_files_share_falls_back_to_s3_uri_without_public_base_url(monkeypatc
             uploaded["bucket"] = bucket
             uploaded["key"] = key
 
-        def generate_presigned_url(self, op_name, Params, ExpiresIn):
-            assert op_name == "get_object"
-            assert Params["Bucket"] == "upload-bucket"
-            assert Params["Key"] == "uploads/u-1/1111111111111111111111/payload.txt"
-            assert ExpiresIn == 3600
-            return "https://signed.example.net/payload.txt?X-Amz-Signature=abc"
-
     class _FakeSession:
         def __init__(self, **kwargs):
             uploaded["region"] = str(kwargs.get("region_name") or "")
@@ -1435,11 +1429,14 @@ def test_cmd_files_share_falls_back_to_s3_uri_without_public_base_url(monkeypatc
         name=None,
         json_output=False,
     )
-    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
-    assert capsys.readouterr().out.strip() == "https://signed.example.net/payload.txt?X-Amz-Signature=abc"
+    with pytest.raises(OpError, match="missing files public base url in credentials references"):
+        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+    assert capsys.readouterr().out.strip() == ""
+    assert uploaded["bucket"] == "upload-bucket"
+    assert uploaded["key"] == "uploads/u-1/1111111111111111111111/payload.txt"
 
 
-def test_cmd_files_share_json_output_falls_back_to_presigned_url(monkeypatch, tmp_path, capsys):
+def test_cmd_files_share_json_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
     source_file = tmp_path / "payload.txt"
     source_file.write_text("hello", encoding="utf-8")
     creds_doc = {
@@ -1464,12 +1461,6 @@ def test_cmd_files_share_json_output_falls_back_to_presigned_url(monkeypatch, tm
         def upload_file(self, local_path, bucket, key):
             return None
 
-        def generate_presigned_url(self, op_name, Params, ExpiresIn):
-            assert op_name == "get_object"
-            assert Params["Bucket"] == "upload-bucket"
-            assert ExpiresIn == 3600
-            return "https://signed.example.net/payload.txt?X-Amz-Signature=abc"
-
     class _FakeSession:
         def __init__(self, **kwargs):
             pass
@@ -1489,8 +1480,6 @@ def test_cmd_files_share_json_output_falls_back_to_presigned_url(monkeypatch, tm
         name=None,
         json_output=True,
     )
-    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["s3Uri"] == "s3://upload-bucket/uploads/u-1/1111111111111111111111/payload.txt"
-    assert payload["publicBaseUrl"] == ""
-    assert payload["publicUrl"] == "https://signed.example.net/payload.txt?X-Amz-Signature=abc"
+    with pytest.raises(OpError, match="missing files public base url in credentials references"):
+        cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json")))
+    assert capsys.readouterr().out.strip() == ""

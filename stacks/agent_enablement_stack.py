@@ -1392,6 +1392,10 @@ class AgentEnablementStack(Stack):
             f"https://{upload_distribution.distribution_domain_name}/",
         )
         credentials_fn.add_environment(
+            "FILES_PUBLIC_BASE_URL",
+            f"https://{upload_distribution.distribution_domain_name}/",
+        )
+        credentials_fn.add_environment(
             "API_REQUIRED_HEADERS",
             "x-api-key,authorization",
         )

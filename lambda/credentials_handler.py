@@ -49,6 +49,7 @@ EVENT_BUS_ARN = os.environ.get("EVENT_BUS_ARN", "")
 COMMS_FILES_BUCKET = os.environ.get("COMMS_FILES_BUCKET", "")
 SHORTLINK_CREATE_URL = os.environ.get("SHORTLINK_CREATE_URL", "")
 SHORTLINK_REDIRECT_BASE_URL = os.environ.get("SHORTLINK_REDIRECT_BASE_URL", "")
+FILES_PUBLIC_BASE_URL = os.environ.get("FILES_PUBLIC_BASE_URL", "")
 CREDENTIALS_PATH = os.environ.get("CREDENTIALS_PATH", "/v1/credentials")
 CREDENTIALS_REFRESH_PATH = os.environ.get(
     "CREDENTIALS_REFRESH_PATH", "/v1/credentials/refresh"
@@ -1170,6 +1171,16 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             }
             wide_event["outcome"] = "invalid_profile"
             return _response(status_code, body)
+        files_public_base_url = (FILES_PUBLIC_BASE_URL or "").strip()
+        if not files_public_base_url:
+            status_code = 500
+            body = {
+                "errorCode": "MISCONFIGURED",
+                "message": "Server misconfigured",
+                "requestId": request_id,
+            }
+            wide_event["outcome"] = "error"
+            return _response(status_code, body)
 
         wide_event["grants"] = {
             "s3_bucket": s3_bucket,
@@ -1509,6 +1520,10 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             },
             "taskboard": {
                 "invokeUrl": taskboard_invoke_url,
+                "docs": docs,
+            },
+            "files": {
+                "publicBaseUrl": files_public_base_url,
                 "docs": docs,
             },
             "s3": {

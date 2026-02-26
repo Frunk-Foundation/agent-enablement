@@ -145,6 +145,15 @@ def test_bundle_handler_sets_cloudfront_urls_from_distributions(monkeypatch):
     assert "DomainName" in rendered_files
 
 
+def test_credentials_handler_sets_files_public_base_url(monkeypatch):
+    template = _synth_template(monkeypatch)
+    fn = _find_resource(template, "AWS::Lambda::Function", "CredentialsHandler")
+    env_vars = fn["Properties"]["Environment"]["Variables"]
+    assert "FILES_PUBLIC_BASE_URL" in env_vars
+    rendered_files = json.dumps(env_vars["FILES_PUBLIC_BASE_URL"], sort_keys=True)
+    assert "DomainName" in rendered_files
+
+
 def test_upload_distribution_uses_oac_and_bucket_policy_allows_distribution(monkeypatch):
     template = _synth_template(monkeypatch)
 

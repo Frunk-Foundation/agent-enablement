@@ -25,6 +25,7 @@ def _load_handler(monkeypatch):
     monkeypatch.setenv("COMMS_FILES_BUCKET", "comms-bucket")
     monkeypatch.setenv("SHORTLINK_CREATE_URL", "https://api.example.com/prod/v1/links")
     monkeypatch.setenv("SHORTLINK_REDIRECT_BASE_URL", "https://d111111abcdef8.cloudfront.net/l/")
+    monkeypatch.setenv("FILES_PUBLIC_BASE_URL", "https://d222222abcdef8.cloudfront.net/")
     monkeypatch.setenv(
         "ENABLEMENT_INDEX_URL",
         "https://bucket.s3.us-east-1.amazonaws.com/agent-enablement/latest/CONTENTS.md",
@@ -143,6 +144,7 @@ def test_success_response_contains_credentials_and_catalog(monkeypatch):
     assert refs.get("messages", {}).get("agentId") == "agent-user"
     assert refs.get("messages", {}).get("eventBusArn") == "arn:aws:events:us-east-1:123456789012:event-bus/b"
     assert refs.get("messages", {}).get("inboxQueueArn") == "arn:aws:sqs:us-east-1:123456789012:inbox"
+    assert refs.get("files", {}).get("publicBaseUrl") == "https://d222222abcdef8.cloudfront.net/"
     ct = body.get("cognitoTokens")
     assert isinstance(ct, dict)
     assert ct.get("idToken")
@@ -755,6 +757,47 @@ def test_provisioning_scope_missing_boundary_arn_returns_500(monkeypatch):
                 "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
                 "enabled": {"BOOL": True},
                 "credentialScope": {"S": "provisioning"},
+            }
+        }
+
+    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    handler_module._cognito_client = FakeCognito()
+
+    import base64
+
+    basic = base64.b64encode(b"u:p").decode()
+    event = {"headers": {"Authorization": f"Basic {basic}"}, "requestContext": {"requestId": "r1"}}
+    out = handler_module.handler(event, None)
+
+    assert out["statusCode"] == 500
+    assert "MISCONFIGURED" in out["body"]
+
+
+def test_missing_files_public_base_url_returns_500(monkeypatch):
+    handler_module = _load_handler(monkeypatch)
+    monkeypatch.delenv("FILES_PUBLIC_BASE_URL", raising=False)
+    handler_module = importlib.reload(handler_module)
+
+    class FakeCognito:
+        def initiate_auth(self, **kwargs):
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "agent-user"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c"}}
+
+    def fake_get_item(**kwargs):
+        return {
+            "Item": {
+                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                "enabled": {"BOOL": True},
+                "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                "s3Bucket": {"S": "test-bucket"},
+                "agentId": {"S": "agent-user"},
+                "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
             }
         }
 
