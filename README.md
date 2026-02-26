@@ -196,6 +196,8 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
   - `files.exec` (`action=help|share`)
   - `ops.result` (for async polling when `async=true`)
 
+`files.exec` `action=share` always returns an HTTPS `publicUrl`: from `references.files.publicBaseUrl` when configured, otherwise a presigned S3 GET URL.
+
 ## Admin CLI
 
 ### Stack and Shared Secrets
