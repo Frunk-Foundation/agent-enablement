@@ -105,6 +105,26 @@ def test_tools_call_help_action_detail(monkeypatch, tmp_path: Path) -> None:
     assert "messages.exec" in text
     assert "recv" in text
     assert "tools/call" in text
+    assert "maxNumber" in text
+
+
+def test_tools_call_help_shortlinks_create_includes_target_url_example(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 215,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "shortlinks.exec", "action": "create"}},
+        }
+    )
+
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "shortlinks.exec" in text
+    assert "targetUrl" in text
 
 
 def test_tools_call_help_rejects_action_without_tool(monkeypatch, tmp_path: Path) -> None:

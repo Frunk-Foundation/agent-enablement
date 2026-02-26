@@ -145,11 +145,16 @@ def test_bundle_handler_sets_cloudfront_urls_from_distributions(monkeypatch):
     assert "DomainName" in rendered_files
 
 
-def test_credentials_handler_sets_files_public_base_url(monkeypatch):
+def test_credentials_handler_sets_cloudfront_urls(monkeypatch):
     template = _synth_template(monkeypatch)
     fn = _find_resource(template, "AWS::Lambda::Function", "CredentialsHandler")
     env_vars = fn["Properties"]["Environment"]["Variables"]
+
+    assert "SHORTLINK_REDIRECT_BASE_URL" in env_vars
     assert "FILES_PUBLIC_BASE_URL" in env_vars
+    rendered_shortlinks = json.dumps(env_vars["SHORTLINK_REDIRECT_BASE_URL"], sort_keys=True)
+    assert "DomainName" in rendered_shortlinks
+    assert "/l/" in rendered_shortlinks
     rendered_files = json.dumps(env_vars["FILES_PUBLIC_BASE_URL"], sort_keys=True)
     assert "DomainName" in rendered_files
 

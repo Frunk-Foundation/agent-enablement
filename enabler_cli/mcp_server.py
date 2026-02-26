@@ -195,7 +195,7 @@ class EnablerMcp:
         self._register(
             ToolDef(
                 name="messages.exec",
-                description="Execute a messages action.",
+                description="Execute message actions (send/recv/ack/help). send args: to,text; ack args: ackToken|receiptHandle.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -212,7 +212,7 @@ class EnablerMcp:
         self._register(
             ToolDef(
                 name="shortlinks.exec",
-                description="Execute a shortlinks action.",
+                description="Execute shortlink actions (create/resolve_url/help). create args: targetUrl[, alias]; resolve_url args: code.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -229,7 +229,7 @@ class EnablerMcp:
         self._register(
             ToolDef(
                 name="files.exec",
-                description="Execute a files action.",
+                description="Execute file-share actions (share/help). share args: filePath[, name].",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -529,30 +529,53 @@ class EnablerMcp:
                 "brief": "Inbox messaging operations.",
                 "actions": {
                     "help": "Describe message actions and examples.",
-                    "send": "Send message to another agent.",
-                    "recv": "Receive pending messages.",
-                    "ack": "Acknowledge a received message.",
+                    "send": "Send message to another agent. args: to, text (optional: kind, messageJson, metaJson).",
+                    "recv": "Receive pending messages. args: maxNumber, waitSeconds, ackAll (optional: queueUrl, visibilityTimeout).",
+                    "ack": "Acknowledge a received message. args: ackToken (or receiptHandle, optional queueUrl).",
                 },
             },
             "shortlinks.exec": {
                 "brief": "Shortlink creation and URL resolution.",
                 "actions": {
                     "help": "Describe shortlinks actions and examples.",
-                    "create": "Create short code for target URL.",
-                    "resolve_url": "Render full resolve URL from short code.",
+                    "create": "Create short code for target URL. args: targetUrl (optional: alias).",
+                    "resolve_url": "Render full resolve URL from short code. args: code.",
                 },
             },
             "files.exec": {
                 "brief": "File-sharing helper actions.",
                 "actions": {
                     "help": "Describe file-share action and examples.",
-                    "share": "Upload/share one file payload.",
+                    "share": "Upload/share one file payload. args: filePath (optional: name).",
                 },
             },
             "ops.result": {
                 "brief": "Fetch status/result for async operations.",
             },
         }
+
+    @staticmethod
+    def _help_example_args(*, tool_name: str, action: str) -> dict[str, Any]:
+        examples: dict[tuple[str, str], dict[str, Any]] = {
+            ("credentials.exec", "ensure"): {"set": "agentEnablement"},
+            ("credentials.exec", "set_agentid"): {"agentId": "jay"},
+            ("credentials.exec", "delegation_request"): {"ttlSeconds": 600, "scope": ["taskboard", "messages"]},
+            ("credentials.exec", "delegation_approve"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
+            ("credentials.exec", "delegation_status"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
+            ("credentials.exec", "delegation_redeem"): {"token": "eyJ..."},
+            ("taskboard.exec", "create"): {"title": "Sprint board"},
+            ("taskboard.exec", "add"): {"boardId": "board-123", "title": "Ship docs"},
+            ("taskboard.exec", "list"): {"boardId": "board-123", "limit": 20},
+            ("taskboard.exec", "claim"): {"taskId": "task-123"},
+            ("taskboard.exec", "done"): {"taskId": "task-123", "result": "completed"},
+            ("messages.exec", "send"): {"to": "jay", "text": "doorstop review uploaded"},
+            ("messages.exec", "recv"): {"maxNumber": 10, "waitSeconds": 10},
+            ("messages.exec", "ack"): {"ackToken": "AQEB..."},
+            ("shortlinks.exec", "create"): {"targetUrl": "https://d1z3djyrl2kl58.cloudfront.net/path/file.html"},
+            ("shortlinks.exec", "resolve_url"): {"code": "7wKzbwvsMDmDmpvB69QRtA"},
+            ("files.exec", "share"): {"filePath": "README.md"},
+        }
+        return dict(examples.get((tool_name, action), {}))
 
     def _help_text(self, *, tool_name: str = "", action: str = "") -> str:
         catalog = self._help_catalog()
@@ -606,7 +629,7 @@ class EnablerMcp:
                             "name": tool_name,
                             "arguments": {
                                 "action": action,
-                                "args": {},
+                                "args": self._help_example_args(tool_name=tool_name, action=action),
                             },
                         },
                     },

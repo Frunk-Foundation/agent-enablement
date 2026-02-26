@@ -150,6 +150,8 @@ Migration guide for existing agents/scripts that still source `sts.env`:
   - `shortlinks.exec` (`action=help|create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
 
+`shortlinks.exec` `action=create` returns `shortUrl` based on `references.shortlinks.redirectBaseUrl`, which is expected to be the CloudFront `/l/` base URL.
+
 Help examples:
 
 ```json

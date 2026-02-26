@@ -1387,6 +1387,10 @@ class AgentEnablementStack(Stack):
             "SHORTLINK_REDIRECT_BASE_URL",
             f"https://{distribution.distribution_domain_name}/l/",
         )
+        credentials_fn.add_environment(
+            "SHORTLINK_REDIRECT_BASE_URL",
+            f"https://{distribution.distribution_domain_name}/l/",
+        )
         bundle_fn.add_environment(
             "FILES_PUBLIC_BASE_URL",
             f"https://{upload_distribution.distribution_domain_name}/",
