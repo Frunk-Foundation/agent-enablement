@@ -927,3 +927,84 @@ def test_delegation_redeem_missing_request_code_is_unauthorized(monkeypatch):
     )
     assert out["statusCode"] == 401
     assert "Missing requestCode" in out["body"]
+
+
+def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
+    handler_module = _load_handler(monkeypatch)
+
+    class FakeDdb:
+        @staticmethod
+        def update_item(**kwargs):
+            table = kwargs.get("TableName")
+            if table == "DelegationRequests":
+                return {
+                    "Attributes": {
+                        "status": {"S": "redeemed"},
+                        "ephemeralAgentId": {"S": "ephem-t1"},
+                        "ephemeralUsername": {"S": "ephem-t1"},
+                    }
+                }
+            return {"Attributes": {}}
+
+        @staticmethod
+        def put_item(**kwargs):
+            del kwargs
+            return {}
+
+        @staticmethod
+        def get_item(**kwargs):
+            assert kwargs["TableName"] == "AgentProfiles"
+            return {
+                "Item": {
+                    "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                    "enabled": {"BOOL": True},
+                    "profileType": {"S": "ephemeral"},
+                    "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                    "s3Bucket": {"S": "test-bucket"},
+                    "agentId": {"S": "ephem-t1"},
+                    "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
+                }
+            }
+
+    class FakeCognito:
+        def admin_create_user(self, **kwargs):
+            del kwargs
+
+        def admin_set_user_password(self, **kwargs):
+            del kwargs
+
+        def initiate_auth(self, **kwargs):
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephem-t1"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c", "AccessToken": "at", "RefreshToken": "rt"}}
+
+    class FakeSts:
+        def assume_role(self, **kwargs):
+            del kwargs
+            return {
+                "Credentials": {
+                    "AccessKeyId": "ASIA123",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                    "Expiration": datetime(2026, 2, 10, tzinfo=timezone.utc),
+                }
+            }
+
+    handler_module._ddb_client = FakeDdb()
+    handler_module._cognito_client = FakeCognito()
+    handler_module._sts_client = FakeSts()
+    event = {
+        "path": "/v1/delegation/redeem",
+        "body": json.dumps({"requestCode": "req-1"}),
+        "requestContext": {"requestId": "r1"},
+    }
+    out = handler_module.handler(event, None)
+    body = json.loads(out["body"])
+    assert out["statusCode"] == 200
+    assert body["ephemeralAgentId"] == "ephem-t1"
+    assert body["ephemeralUsername"] == "ephem-t1"

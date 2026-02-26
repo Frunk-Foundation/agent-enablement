@@ -1598,6 +1598,9 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 ],
             },
         }
+        if auth_mode == "delegation-redeem":
+            body["ephemeralAgentId"] = _ddb_str(claims, "ephemeralAgentId", default="")
+            body["ephemeralUsername"] = _ddb_str(claims, "ephemeralUsername", default="")
         enablement_set = {
             "accountId": _arn_account_id(assume_role_arn),
             "awsRegion": _aws_region(),

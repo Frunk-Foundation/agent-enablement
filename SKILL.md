@@ -64,5 +64,5 @@ just test
 - MCP stdio framing here must be newline-delimited JSON-RPC. `Content-Length` framing causes Codex MCP startup timeout symptoms even when the server process is fast.
 - Delegation uses short-code request/approve/redeem. Any named profile can approve a pending code; redeem is one-time and writes the target session cache/artifacts.
 - Agent-id session mode must derive credential paths from resolved `GlobalOpts.agent_id` (not only env). Otherwise helper flows that construct `GlobalOpts` directly will silently read/write the wrong session.
-- Codex MCP startup requires fixed identity wiring in config (`args = ["--agent-id","<id>"]`). Without it, startup fails immediately with `missing agent id`, which often appears as timeout in clients.
+- Codex MCP can start unbound (no `--agent-id`). In unbound mode, bootstrap via `credentials.exec` delegation request/approve/redeem, then runtime tools become available.
 - MCP runtime switching (`credentials.exec` + `action=set_agentid`) changes only the default context for future calls; async jobs must pin enqueue-time `agentId` to avoid identity drift.

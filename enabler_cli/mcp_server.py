@@ -51,8 +51,8 @@ from .runtime_core import (
 )
 from .apps.agent_admin_cli import _http_post_json
 from .cli_shared import ENABLER_API_KEY
+from .cli_shared import ENABLER_CREDENTIALS_ENDPOINT
 from .cli_shared import GlobalOpts
-from .cli_shared import ENABLER_AGENT_ID
 
 ToolFunc = Callable[[dict[str, Any]], Any]
 
@@ -92,10 +92,8 @@ class EnablerMcp:
             quiet=True,
         )
         self.g: GlobalOpts = _apply_global_env(ns)
-        if not self.g.agent_id:
-            raise UsageError(f"missing agent id (pass --agent-id or set {ENABLER_AGENT_ID})")
         self._context_lock = threading.Lock()
-        self._default_agent_id = self.g.agent_id
+        self._default_agent_id = self.g.agent_id or ""
         self.tools: dict[str, ToolDef] = {}
         self._operations: dict[str, OperationRecord] = {}
         self._operations_lock = threading.Lock()
@@ -259,6 +257,15 @@ class EnablerMcp:
         with self._context_lock:
             return self._default_agent_id
 
+    def _is_bound(self) -> bool:
+        return bool(self._current_agent_id().strip())
+
+    def _require_bound_agent_id(self) -> str:
+        agent_id = self._current_agent_id().strip()
+        if not agent_id:
+            raise UsageError("UNBOUND_IDENTITY: No active agent identity; redeem delegation request first")
+        return agent_id
+
     def _ensure_doc(
         self,
         *,
@@ -320,6 +327,19 @@ class EnablerMcp:
         target_path = path[: -len("/v1/credentials")] + suffix
         return urlunparse(parsed._replace(path=target_path))
 
+    def _bootstrap_credentials_endpoint(self, *, g: GlobalOpts) -> str:
+        if self._is_bound():
+            doc = self._ensure_doc(g=g)
+            endpoint = self._runtime_credentials_endpoint(doc)
+            if endpoint:
+                return endpoint
+        endpoint = str(os.environ.get(ENABLER_CREDENTIALS_ENDPOINT) or "").strip()
+        if endpoint:
+            return endpoint
+        raise UsageError(
+            f"missing credentials endpoint in cached auth metadata and env {ENABLER_CREDENTIALS_ENDPOINT}"
+        )
+
     def _json_obj_or_error(self, *, raw: bytes, label: str) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="replace")
         try:
@@ -376,6 +396,8 @@ class EnablerMcp:
 
         if "operation_not_found" in lower:
             code = "OPERATION_NOT_FOUND"
+        elif "unbound_identity" in lower:
+            code = "UNBOUND_IDENTITY"
         elif "missing credential set" in lower:
             code = "MISSING_CREDENTIAL_SET"
         elif "missing_id_token" in lower or "cognitotokens.idtoken" in lower:
@@ -416,6 +438,19 @@ class EnablerMcp:
 
     def _tool_credentials_status(self, _args: dict[str, Any]) -> Any:
         agent_id = self._current_agent_id()
+        if not agent_id:
+            return {
+                "kind": "enabler.creds.status.v1",
+                "defaultAgentId": "",
+                "agentId": "",
+                "bound": False,
+                "profileType": "",
+                "expiresAt": "",
+                "freshness": {"status": "missing", "secondsToExpiry": 0},
+                "credentialSets": [],
+                "cachePath": "",
+                "hint": "Run credentials.exec action=delegation_request, approve from a named agent, then delegation_redeem.",
+            }
         g = self._g_for_agent(agent_id)
         doc = self._ensure_doc(g=g)
         expires_at = _credentials_expires_at(doc)
@@ -460,9 +495,11 @@ class EnablerMcp:
 
     def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "ensure":
+            self._require_bound_agent_id()
             return self._credentials_ensure_payload(args, g=g)
 
         if action == "set_agentid":
+            self._require_bound_agent_id()
             new_agent_id = str(args.get("agentId") or "").strip()
             if not new_agent_id:
                 raise UsageError("missing agentId")
@@ -479,6 +516,7 @@ class EnablerMcp:
             }
 
         if action == "list_sessions":
+            self._require_bound_agent_id()
             root = _artifact_root(g)
             sessions_root = root.parent
             sessions: list[dict[str, Any]] = []
@@ -500,8 +538,7 @@ class EnablerMcp:
             api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
             if not api_key:
                 raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-            source_doc = self._ensure_doc(g=g)
-            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            credentials_endpoint = self._bootstrap_credentials_endpoint(g=g)
             request_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/requests")
             scopes_raw = args.get("scopes")
             if isinstance(scopes_raw, list):
@@ -521,11 +558,12 @@ class EnablerMcp:
             )
             return {
                 "kind": "enabler.mcp.credentials.delegation-request.v1",
-                "agentId": g.agent_id,
+                "agentId": self._current_agent_id(),
                 "request": request_resp,
             }
 
         if action == "delegation_approve":
+            self._require_bound_agent_id()
             source_doc = self._ensure_doc(g=g, require_id_token=True)
             if self._profile_type_from_doc(source_doc) != "named":
                 raise UsageError("Only named agent profiles may approve delegation requests")
@@ -549,7 +587,7 @@ class EnablerMcp:
             )
             return {
                 "kind": "enabler.mcp.credentials.delegation-approve.v1",
-                "agentId": g.agent_id,
+                "agentId": self._current_agent_id(),
                 "approval": approval_resp,
             }
 
@@ -557,11 +595,10 @@ class EnablerMcp:
             api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
             if not api_key:
                 raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-            source_doc = self._ensure_doc(g=g)
             request_code = str(args.get("requestCode") or "").strip()
             if not request_code:
                 raise UsageError("missing requestCode")
-            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            credentials_endpoint = self._bootstrap_credentials_endpoint(g=g)
             status_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/status")
             status_resp = self._post_json_checked(
                 url=status_endpoint,
@@ -574,7 +611,7 @@ class EnablerMcp:
             )
             return {
                 "kind": "enabler.mcp.credentials.delegation-status.v1",
-                "agentId": g.agent_id,
+                "agentId": self._current_agent_id(),
                 "status": status_resp,
             }
 
@@ -582,13 +619,13 @@ class EnablerMcp:
             api_key = str(os.environ.get(ENABLER_API_KEY) or "").strip()
             if not api_key:
                 raise UsageError(f"missing {ENABLER_API_KEY} (set env var)")
-            source_doc = self._ensure_doc(g=g)
             request_code = str(args.get("requestCode") or "").strip()
             if not request_code:
                 raise UsageError("missing requestCode")
-            target_agent_id = str(args.get("targetAgentId") or "").strip() or g.agent_id
+            was_unbound = not self._is_bound()
+            target_agent_id = str(args.get("targetAgentId") or "").strip()
             switch_to_target = bool(args.get("switchToTarget", False))
-            credentials_endpoint = self._runtime_credentials_endpoint(source_doc)
+            credentials_endpoint = self._bootstrap_credentials_endpoint(g=g)
             redeem_endpoint = self._derive_endpoint(credentials_endpoint, suffix="/v1/delegation/redeem")
             redeem_resp = self._post_json_checked(
                 url=redeem_endpoint,
@@ -599,6 +636,22 @@ class EnablerMcp:
                 body_obj={"requestCode": request_code},
                 label="delegation request redeem",
             )
+            server_ephemeral_agent_id = str(redeem_resp.get("ephemeralAgentId") or "").strip()
+            if not server_ephemeral_agent_id:
+                principal = redeem_resp.get("principal")
+                if isinstance(principal, dict):
+                    puser = str(principal.get("username") or "").strip()
+                    if puser.startswith("ephem-"):
+                        server_ephemeral_agent_id = puser
+            if was_unbound:
+                if not server_ephemeral_agent_id:
+                    raise OpError("delegation redeem response missing ephemeralAgentId")
+                target_agent_id = server_ephemeral_agent_id
+                switch_to_target = True
+            if not target_agent_id:
+                target_agent_id = server_ephemeral_agent_id or g.agent_id
+            if not target_agent_id:
+                raise OpError("unable to determine targetAgentId for redeemed session")
             target_g = self._g_for_agent(target_agent_id)
             artifacts = self._write_exchange_artifacts(g=target_g, response_obj=redeem_resp)
             switched = False
@@ -608,8 +661,9 @@ class EnablerMcp:
                 switched = True
             return {
                 "kind": "enabler.mcp.credentials.delegation-redeem.v1",
-                "agentId": g.agent_id,
+                "agentId": self._current_agent_id(),
                 "targetAgentId": target_agent_id,
+                "serverEphemeralAgentId": server_ephemeral_agent_id,
                 "switched": switched,
                 "currentDefaultAgentId": self._current_agent_id(),
                 "principal": redeem_resp.get("principal"),
@@ -744,7 +798,7 @@ class EnablerMcp:
         raise UsageError(f"unknown files action: {action}")
 
     def _tool_taskboard_exec(self, args: dict[str, Any]) -> Any:
-        g = self._g_for_agent(self._current_agent_id())
+        g = self._g_for_agent(self._require_bound_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
@@ -752,7 +806,7 @@ class EnablerMcp:
         return self._dispatch_taskboard(action, action_args, g=g)
 
     def _tool_messages_exec(self, args: dict[str, Any]) -> Any:
-        g = self._g_for_agent(self._current_agent_id())
+        g = self._g_for_agent(self._require_bound_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
@@ -760,7 +814,7 @@ class EnablerMcp:
         return self._dispatch_messages(action, action_args, g=g)
 
     def _tool_shortlinks_exec(self, args: dict[str, Any]) -> Any:
-        g = self._g_for_agent(self._current_agent_id())
+        g = self._g_for_agent(self._require_bound_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
@@ -768,7 +822,7 @@ class EnablerMcp:
         return self._dispatch_shortlinks(action, action_args, g=g)
 
     def _tool_files_exec(self, args: dict[str, Any]) -> Any:
-        g = self._g_for_agent(self._current_agent_id())
+        g = self._g_for_agent(self._require_bound_agent_id())
         action = str(args.get("action") or "").strip()
         action_args = args.get("args")
         if not isinstance(action_args, dict):
@@ -827,6 +881,10 @@ class EnablerMcp:
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_credentials(action, action_args, g=g)
+        if tool.name == "credentials.status":
+            return tool.handler(arguments)
+        if tool.name != "credentials.status" and not self._is_bound():
+            self._require_bound_agent_id()
         required_set, require_id_token = self._auth_requirements(tool.name, arguments)
         self._ensure_doc(g=g, required_set=required_set, require_id_token=require_id_token)
         if tool.name == "taskboard.exec":
@@ -891,6 +949,9 @@ class EnablerMcp:
         op_id = uuid.uuid4().hex
         action = str(arguments.get("action") or "").strip()
         agent_id = self._current_agent_id()
+        if not self._is_bound():
+            if tool.name != "credentials.exec" or action not in {"delegation_request", "delegation_status", "delegation_redeem"}:
+                self._require_bound_agent_id()
         rec = OperationRecord(
             operation_id=op_id,
             tool_name=tool.name,

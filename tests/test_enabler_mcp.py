@@ -85,6 +85,23 @@ def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
     assert parsed["kind"] == "enabler.creds.status.v1"
 
 
+def test_tools_call_credentials_status_unbound() -> None:
+    mcp = EnablerMcp(agent_id="")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 200,
+            "method": "tools/call",
+            "params": {"name": "credentials.status", "arguments": {}},
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["kind"] == "enabler.creds.status.v1"
+    assert parsed["bound"] is False
+    assert parsed["agentId"] == ""
+
+
 def test_credentials_exec_ensure(monkeypatch, tmp_path: Path) -> None:
     _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
     mcp = EnablerMcp(agent_id="agent-a")
@@ -335,9 +352,131 @@ def test_stdio_startup_without_agent_id_exits_with_helpful_error() -> None:
         cwd=str(Path(__file__).resolve().parents[1]),
         env={k: v for k, v in os.environ.items() if k != "ENABLER_AGENT_ID"},
     )
-    _out, err = proc.communicate(timeout=3)
-    assert proc.returncode == 1
-    assert "missing agent id" in (err or "").lower()
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n")
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 3.0)
+        assert ready, "timeout waiting for initialize response in unbound mode"
+        init_resp = json.loads(proc.stdout.readline())
+        assert init_resp["id"] == 1
+        assert init_resp["result"]["serverInfo"]["name"] == "enabler-mcp"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+def test_unbound_non_credentials_tool_fails_with_unbound_identity() -> None:
+    mcp = EnablerMcp(agent_id="")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "tools/call",
+            "params": {"name": "taskboard.exec", "arguments": {"action": "create", "args": {"name": "x"}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    assert resp["error"]["data"]["code"] == "UNBOUND_IDENTITY"
+
+
+def test_unbound_delegation_request_uses_env_endpoint(monkeypatch) -> None:
+    mcp = EnablerMcp(agent_id="")
+    monkeypatch.setenv("ENABLER_API_KEY", "api-key")
+    monkeypatch.setenv("ENABLER_CREDENTIALS_ENDPOINT", "https://api.example.com/prod/v1/credentials")
+
+    def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
+        del timeout_seconds
+        assert url == "https://api.example.com/prod/v1/delegation/requests"
+        assert headers["x-api-key"] == "api-key"
+        assert json.loads(body.decode("utf-8"))["ttlSeconds"] == 600
+        return (
+            200,
+            {},
+            json.dumps({"kind": "agent-enablement.delegation.request.v1", "requestCode": "req-1"}).encode("utf-8"),
+        )
+
+    monkeypatch.setattr("enabler_cli.mcp_server._http_post_json", _fake_post_json)
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 202,
+            "method": "tools/call",
+            "params": {"name": "credentials.exec", "arguments": {"action": "delegation_request", "args": {}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["request"]["requestCode"] == "req-1"
+
+
+def test_unbound_delegation_redeem_binds_to_server_ephemeral_id(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("ENABLER_API_KEY", "api-key")
+    monkeypatch.setenv("ENABLER_CREDENTIALS_ENDPOINT", "https://api.example.com/prod/v1/credentials")
+    mcp = EnablerMcp(agent_id="")
+
+    def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
+        del headers, timeout_seconds
+        assert url == "https://api.example.com/prod/v1/delegation/redeem"
+        assert json.loads(body.decode("utf-8")) == {"requestCode": "req-1"}
+        exp = "2099-01-01T00:00:00+00:00"
+        return (
+            200,
+            {},
+            json.dumps(
+                {
+                    "kind": "agent-enablement.credentials.v2",
+                    "expiresAt": exp,
+                    "ephemeralAgentId": "ephem-z9",
+                    "ephemeralUsername": "ephem-z9",
+                    "principal": {"sub": "sub-2", "username": "ephem-z9", "profileType": "ephemeral"},
+                    "credentials": {
+                        "accessKeyId": "ASIA2",
+                        "secretAccessKey": "secret",
+                        "sessionToken": "token",
+                        "expiration": exp,
+                    },
+                    "credentialSets": {
+                        "agentEnablement": {
+                            "credentials": {
+                                "accessKeyId": "ASIA2",
+                                "secretAccessKey": "secret",
+                                "sessionToken": "token",
+                                "expiration": exp,
+                            },
+                            "references": {"awsRegion": "us-east-2"},
+                        }
+                    },
+                    "cognitoTokens": {
+                        "idToken": "a.b.c",
+                        "accessToken": "d.e.f",
+                        "refreshToken": "refresh",
+                    },
+                }
+            ).encode("utf-8"),
+        )
+
+    monkeypatch.setattr("enabler_cli.mcp_server._http_post_json", _fake_post_json)
+    redeem = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 203,
+            "method": "tools/call",
+            "params": {
+                "name": "credentials.exec",
+                "arguments": {"action": "delegation_redeem", "args": {"requestCode": "req-1"}},
+            },
+        }
+    )
+    assert isinstance(redeem, dict)
+    parsed = json.loads(redeem["result"]["content"][0]["text"])
+    assert parsed["targetAgentId"] == "ephem-z9"
+    assert parsed["switched"] is True
+    assert parsed["currentDefaultAgentId"] == "ephem-z9"
+
 
 
 def test_credentials_exec_set_agentid_switches_default_context(monkeypatch, tmp_path: Path) -> None:

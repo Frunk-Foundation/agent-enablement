@@ -35,6 +35,7 @@ export ENABLER_COGNITO_USERNAME='<username>'
 export ENABLER_COGNITO_PASSWORD='<password>'
 export ENABLER_API_KEY='<shared-api-key>'
 export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
+# optional when starting MCP already bound:
 export ENABLER_AGENT_ID='<agent-id>'
 ```
 
@@ -70,7 +71,7 @@ Ephemeral delegation flow (request -> approve -> redeem):
 `./enabler-mcp` uses newline-delimited JSON-RPC over stdio (MCP transport). It does not use `Content-Length` framing.
 
 Runtime identity switching is supported without restart via MCP tool `credentials.exec`:
-- Startup `--agent-id` remains the initial default context.
+- Startup `--agent-id` is optional; MCP may start unbound.
 - `credentials.exec` with `action=set_agentid` changes default context for subsequent calls.
 - Async operations are pinned to the `agentId` active at enqueue time.
 
@@ -82,6 +83,8 @@ Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
 - `action=delegation_approve`: approve request code (named profile only).
 - `action=delegation_redeem`: redeem approved request code and write target session artifacts.
 - `action=delegation_status`: fetch delegation request status by code.
+
+When MCP starts unbound (no `--agent-id` and no `ENABLER_AGENT_ID`), non-bootstrap tools fail with `UNBOUND_IDENTITY` until a delegation code is redeemed.
 
 ## Credentials Output Modes
 
@@ -154,19 +157,20 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./enabler-mcp
 ```
 
-- Codex MCP config must pass a fixed runtime identity:
+- Codex MCP config may be unbound (no args), or explicitly bound:
 
 ```toml
 [mcp_servers.agent-enablement]
 command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
-args = ["--agent-id", "jay"]
+# optional:
+# args = ["--agent-id", "jay"]
 ```
 
-- Launcher is cwd-independent; absolute command invocation works as long as `--agent-id` (or `ENABLER_AGENT_ID`) is provided.
+- Launcher is cwd-independent. Unbound startup requires `ENABLER_API_KEY` and `ENABLER_CREDENTIALS_ENDPOINT` for delegation bootstrap actions.
 
 ## Managed Session Model
 
-- Runtime tools are keyed by `ENABLER_AGENT_ID` / `--agent-id`.
+- Runtime tools are keyed by active bound `agentId` once a session is bound.
 - Credentials are persisted in managed session storage (default):
   - Linux: `~/.local/state/enabler/sessions/<agent-id>/session.json`
   - macOS: `~/Library/Application Support/enabler/sessions/<agent-id>/session.json`
