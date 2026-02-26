@@ -131,20 +131,6 @@ def test_credentials_refresh_route_is_api_key_protected(monkeypatch):
     assert props.get("ApiKeyRequired") is True
 
 
-def test_bundle_handler_sets_cloudfront_urls_from_distributions(monkeypatch):
-    template = _synth_template(monkeypatch)
-    fn = _find_resource(template, "AWS::Lambda::Function", "BundleHandler")
-    env_vars = fn["Properties"]["Environment"]["Variables"]
-
-    assert "SHORTLINK_REDIRECT_BASE_URL" in env_vars
-    assert "FILES_PUBLIC_BASE_URL" in env_vars
-    rendered = json.dumps(env_vars["SHORTLINK_REDIRECT_BASE_URL"], sort_keys=True)
-    assert "DomainName" in rendered
-    assert "/l/" in rendered
-    rendered_files = json.dumps(env_vars["FILES_PUBLIC_BASE_URL"], sort_keys=True)
-    assert "DomainName" in rendered_files
-
-
 def test_credentials_handler_sets_cloudfront_urls(monkeypatch):
     template = _synth_template(monkeypatch)
     fn = _find_resource(template, "AWS::Lambda::Function", "CredentialsHandler")

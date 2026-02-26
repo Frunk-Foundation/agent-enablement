@@ -17,16 +17,20 @@
   - Region: `us-east-2`
 
 - CLI split:
-  - `enabler`: agent/client surface (`agent bundle|credentials`, `taskboard`, `comms`, `s3`)
-  - `enabler-admin`: admin/control-plane surface (`stack`, `ssm`, `cognito`, admin-side `agent`, `pack`)
+  - `enabler`: retired shim (prints migration guidance and exits non-zero)
+  - `enabler-creds`: agent/client credential lifecycle
+  - `enabler-mcp`: agent MCP stdio server
+  - `enabler-mcp-cli`: local MCP client wrapper
+  - `enabler-admin`: admin/control-plane surface (`stack`, `ssm`, `cognito`, admin-side `agent`)
   - Internal module layout:
-    - `enabler_cli/cli.py`: Typer wiring + compatibility re-exports
+    - `enabler_cli/creds_main.py`: credentials lifecycle CLI
+    - `enabler_cli/mcp_main.py`: MCP stdio server launcher
+    - `enabler_cli/mcp_cli_main.py`: local MCP client wrapper
+    - `enabler_cli/admin_main.py`: admin CLI launcher
     - `enabler_cli/admin_commands.py`: admin command implementations
     - `enabler_cli/agent_commands.py`: runtime helper implementations
     - `enabler_cli/cli_shared.py`: shared constants/types/error primitives
-  - Preserve compatibility exports from `enabler_cli.cli` unless a breaking change is explicitly intended.
 
 - CDK stack name (default): `AgentEnablementStack` (override via `CDK_STACK_NAME`; legacy stack name: `AgentsAccessStack`)
 - API routes:
-  - Bundle-first: `POST /v1/bundle` (CloudFormation output: `BundleInvokeUrl`)
-  - Credentials-only (optional): `POST /v1/credentials` (CloudFormation output: `CredentialsInvokeUrl`)
+  - Credentials: `POST /v1/credentials` (CloudFormation output: `CredentialsInvokeUrl`)

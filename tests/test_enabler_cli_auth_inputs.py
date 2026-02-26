@@ -82,7 +82,7 @@ def test_resolve_agent_request_auth_client_uses_explicit_values():
 def test_resolve_agent_request_auth_client_derives_endpoint_from_credentials_env():
     resolved = resolve_agent_request_auth_client(
         endpoint=None,
-        endpoint_env_names=("BUNDLE_ENDPOINT",),
+        endpoint_env_names=("DELEGATION_ENDPOINT",),
         api_key=None,
         api_key_env_names=("API_KEY",),
         env_or_none=_env_lookup(
@@ -94,11 +94,11 @@ def test_resolve_agent_request_auth_client_derives_endpoint_from_credentials_env
         missing_endpoint_error="missing endpoint",
         missing_api_key_error="missing key",
         derive_endpoint_from_credentials_env=lambda ep: ep.replace(
-            "/v1/credentials", "/v1/bundle"
+            "/v1/credentials", "/v1/delegation/requests"
         ),
         credentials_endpoint_env_names=("CREDENTIALS_ENDPOINT",),
     )
-    assert resolved.endpoint == "https://api.invalid/v1/bundle"
+    assert resolved.endpoint == "https://api.invalid/v1/delegation/requests"
     assert resolved.api_key == "env-key"
 
 
@@ -106,7 +106,7 @@ def test_resolve_agent_request_auth_client_raises_when_endpoint_missing():
     with pytest.raises(AuthInputError, match="missing endpoint"):
         resolve_agent_request_auth_client(
             endpoint=None,
-            endpoint_env_names=("BUNDLE_ENDPOINT",),
+            endpoint_env_names=("DELEGATION_ENDPOINT",),
             api_key="k",
             api_key_env_names=("API_KEY",),
             env_or_none=_env_lookup({}),
@@ -118,8 +118,8 @@ def test_resolve_agent_request_auth_client_raises_when_endpoint_missing():
 def test_resolve_agent_request_auth_client_raises_when_api_key_missing():
     with pytest.raises(AuthInputError, match="missing key"):
         resolve_agent_request_auth_client(
-            endpoint="https://api.invalid/v1/bundle",
-            endpoint_env_names=("BUNDLE_ENDPOINT",),
+            endpoint="https://api.invalid/v1/delegation/requests",
+            endpoint_env_names=("DELEGATION_ENDPOINT",),
             api_key=None,
             api_key_env_names=("API_KEY",),
             env_or_none=_env_lookup({}),

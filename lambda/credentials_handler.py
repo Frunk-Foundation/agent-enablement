@@ -1562,7 +1562,6 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         }
 
         status_code = 200
-        next_bundle_after = _iso(datetime.now(timezone.utc) + timedelta(hours=24))
         body = {
             "kind": "agent-enablement.credentials.v2",
             "schemaVersion": SCHEMA_VERSION,
@@ -1582,11 +1581,6 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             "runtime": {
                 "serviceEndpoints": {
                     "taskboard": taskboard_invoke_url,
-                },
-                "bundlePolicy": {
-                    "enablementVersion": ENABLEMENT_VERSION,
-                    "nextBundleAfter": next_bundle_after,
-                    "forceRebundleOnVersionMismatch": True,
                 },
             },
             "cognitoTokens": cognito_tokens,

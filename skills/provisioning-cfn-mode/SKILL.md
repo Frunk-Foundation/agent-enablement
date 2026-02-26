@@ -35,9 +35,9 @@ export REQUIRED_BOUNDARY_ARN="$(jq -r '.credentialSets.agentAWSWorkshopProvision
 
 ### 0.5) Examples Folder
 
-Bundle-first: example templates are included locally under `examples/` next to this `SKILL.md`.
+Example templates are included locally under `examples/` next to this `SKILL.md`.
 
-Fallback (credentials-only mode, no bundle ZIP): if you are reading this skill from a URL (S3), fetch the examples:
+If you are reading this skill from a URL (S3), fetch the examples:
 
 ```bash
 SKILLS_ROOT="$(jq -r '.references.enablement.skillsRootUrl' credentials.json)"
@@ -204,4 +204,3 @@ resources so the URL does not return `403 Forbidden`.
 
 ## References
 - `../../README.md`
-

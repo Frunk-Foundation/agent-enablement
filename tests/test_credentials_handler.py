@@ -127,7 +127,6 @@ def test_success_response_contains_credentials_and_catalog(monkeypatch):
     assert "credentialsEndpoint" in body["auth"]
     assert body["auth"]["cognitoClientId"] == "client-1"
     assert "taskboard" in body["runtime"]["serviceEndpoints"]
-    assert body["runtime"]["bundlePolicy"]["enablementVersion"] == "latest"
     assert body["constraints"]["ttlSeconds"] == 3600
     assert body["constraints"]["uploadPrefixBase58"]
     assert "uploadPrefixUuid" not in body["constraints"]

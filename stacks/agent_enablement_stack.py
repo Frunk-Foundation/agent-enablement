@@ -128,12 +128,6 @@ class AgentEnablementStack(Stack):
             enforce_ssl=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             lifecycle_rules=[
-                # Bundles contain credential material; expire quickly.
-                s3.LifecycleRule(
-                    enabled=True,
-                    prefix="bundles/",
-                    expiration=Duration.days(1),
-                ),
                 s3.LifecycleRule(
                     enabled=True,
                     expiration=Duration.days(30),
@@ -249,7 +243,6 @@ class AgentEnablementStack(Stack):
             f"https://{comms_files_bucket.bucket_regional_domain_name}/agent-enablement/latest"
         )
         enablement_index_url = f"{enablement_base_url}/CONTENTS.md"
-        enablement_bundle_url = f"{enablement_base_url}/agent-enablement-bundle.zip"
         enablement_artifacts_root_url = f"{enablement_base_url}/artifacts/"
         enablement_skills_root_url = f"{enablement_base_url}/skills/"
 
@@ -851,8 +844,7 @@ class AgentEnablementStack(Stack):
         profile_table.grant_read_write_data(lambda_execution_role)
         delegation_requests_table.grant_read_write_data(lambda_execution_role)
 
-        # Bundle handler needs read access to the enablement pack prefix and write access
-        # under bundles/. Keep these narrow; presigned URLs are scoped to bundle keys.
+        # Credentials runtime reads enablement docs/artifacts metadata from a narrow prefix.
         lambda_execution_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["s3:ListBucket"],
@@ -913,12 +905,10 @@ class AgentEnablementStack(Stack):
             "DELEGATION_STATUS_PATH": "/v1/delegation/status",
             "DELEGATION_DEFAULT_TTL_SECONDS": "600",
             "DELEGATION_MAX_TTL_SECONDS": "600",
-            "BUNDLE_PATH": "/v1/bundle",
             "TASKBOARD_PATH": "/v1/taskboard",
             "SHORTLINK_CREATE_PATH": "/v1/links",
             "SHORTLINK_REDIRECT_PREFIX": "/l/",
             "ENABLEMENT_INDEX_URL": enablement_index_url,
-            "ENABLEMENT_BUNDLE_URL": enablement_bundle_url,
             "ENABLEMENT_ARTIFACTS_ROOT_URL": enablement_artifacts_root_url,
             "ENABLEMENT_SKILLS_ROOT_URL": enablement_skills_root_url,
             "ENABLEMENT_VERSION": "latest",
@@ -931,17 +921,6 @@ class AgentEnablementStack(Stack):
             handler="credentials_handler.handler",
             code=_lambda.Code.from_asset("lambda"),
             timeout=Duration.seconds(10),
-            role=lambda_execution_role,
-            environment=credentials_env,
-        )
-
-        bundle_fn = _lambda.Function(
-            self,
-            "BundleHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
-            handler="bundle_handler.handler",
-            code=_lambda.Code.from_asset("lambda"),
-            timeout=Duration.seconds(30),
             role=lambda_execution_role,
             environment=credentials_env,
         )
@@ -1175,7 +1154,6 @@ class AgentEnablementStack(Stack):
         delegation_approvals = delegation.add_resource("approvals")
         delegation_redeem = delegation.add_resource("redeem")
         delegation_status = delegation.add_resource("status")
-        bundle = v1.add_resource("bundle")
         links = v1.add_resource("links")
         taskboard = v1.add_resource("taskboard")
         taskboard_boards = taskboard.add_resource("boards")
@@ -1235,12 +1213,6 @@ class AgentEnablementStack(Stack):
         delegation_status.add_method(
             "POST",
             apigw.LambdaIntegration(credentials_fn),
-            authorization_type=apigw.AuthorizationType.NONE,
-            api_key_required=True,
-        )
-        bundle.add_method(
-            "POST",
-            apigw.LambdaIntegration(bundle_fn),
             authorization_type=apigw.AuthorizationType.NONE,
             api_key_required=True,
         )
@@ -1379,21 +1351,9 @@ class AgentEnablementStack(Stack):
             "SSM_KEYS_STAGE",
             stage_name,
         )
-        bundle_fn.add_environment(
-            "SSM_KEYS_STAGE",
-            stage_name,
-        )
-        bundle_fn.add_environment(
-            "SHORTLINK_REDIRECT_BASE_URL",
-            f"https://{distribution.distribution_domain_name}/l/",
-        )
         credentials_fn.add_environment(
             "SHORTLINK_REDIRECT_BASE_URL",
             f"https://{distribution.distribution_domain_name}/l/",
-        )
-        bundle_fn.add_environment(
-            "FILES_PUBLIC_BASE_URL",
-            f"https://{upload_distribution.distribution_domain_name}/",
         )
         credentials_fn.add_environment(
             "FILES_PUBLIC_BASE_URL",
@@ -1435,12 +1395,6 @@ class AgentEnablementStack(Stack):
             "CredentialsInvokeUrl",
             value=f"{rest_api.url}v1/credentials",
             description="Invoke URL for credentials endpoint.",
-        )
-        CfnOutput(
-            self,
-            "BundleInvokeUrl",
-            value=f"{rest_api.url}v1/bundle",
-            description="Invoke URL for enablement bundle endpoint.",
         )
         CfnOutput(
             self,

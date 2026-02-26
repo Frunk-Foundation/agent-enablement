@@ -250,7 +250,7 @@ def test_delegation_request_rejects_non_credentials_endpoint(tmp_path: Path, mon
     cache = tmp_path / "sessions" / "agent-a" / "session.json"
     _seed_cache(cache)
     payload = json.loads(cache.read_text(encoding="utf-8"))
-    payload["auth"]["credentialsEndpoint"] = "https://api.example.com/prod/v1/bundle"
+    payload["auth"]["credentialsEndpoint"] = "https://api.example.com/prod/v1/taskboard"
     cache.write_text(json.dumps(payload), encoding="utf-8")
 
     result = runner.invoke(

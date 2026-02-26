@@ -119,19 +119,6 @@ ssm-get-shared key:
 ssm-get-agent sub key:
 	@AWS_PROFILE={{profile}} AWS_REGION={{region}} ./enabler-admin --stack {{stack}} ssm get-agent "{{sub}}" "{{key}}"
 
-# Call bundle endpoint (Basic Auth + API key), download ZIP, and pretty-print the minimal JSON
-# Requires: ENABLER_ADMIN_COGNITO_PASSWORD and a seeded profile (just ddb-put-profile)
-curl-bundle:
-	@ENDPOINT="${ENABLER_BUNDLE_ENDPOINT:-$(AWS_PROFILE={{profile}} AWS_REGION={{region}} ./enabler-admin --stack {{stack}} stack output BundleInvokeUrl)}"; \
-	API_KEY="${ENABLER_API_KEY:-$(just api-key | jq -r '.value')}"; \
-	AWS_PROFILE={{profile}} AWS_REGION={{region}} ./enabler bundle \
-		--username '{{username}}' \
-		--password '{{password}}' \
-		--endpoint "$ENDPOINT" \
-		--api-key "$API_KEY" \
-		--out enablement-bundle.zip \
-		| jq .
-
 # Call credentials endpoint (Basic Auth + API key) and pretty-print (credentials-only; no ZIP)
 # Requires: ENABLER_ADMIN_COGNITO_PASSWORD and a seeded profile (just ddb-put-profile)
 curl-credentials:
