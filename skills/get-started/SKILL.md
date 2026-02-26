@@ -43,6 +43,7 @@ python3 -m venv .venv
 ```
 
 5. Continue with task-focused skills:
+- `skills/enabler-mcp-cli/SKILL.md`
 - `skills/files-basic-ops/SKILL.md`
 - `skills/messages-basic-ops/SKILL.md`
 - `skills/shortlinks/SKILL.md`

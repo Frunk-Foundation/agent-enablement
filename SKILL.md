@@ -44,6 +44,7 @@ Contains issued STS credentials and runtime references, including:
 
 Skills are sourced directly from root `skills/` folders:
 - `skills/get-started/SKILL.md`
+- `skills/enabler-mcp-cli/SKILL.md`
 - `skills/messages-basic-ops/SKILL.md`
 - `skills/files-basic-ops/SKILL.md` (share file/folder usage)
 - `skills/shortlinks/SKILL.md`
