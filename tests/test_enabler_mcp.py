@@ -17,6 +17,14 @@ def _seed_cache(path: Path) -> None:
         "expiresAt": exp,
         "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
         "principal": {"sub": "sub-1", "username": "agent-a", "profileType": "named"},
+        "references": {
+            "awsRegion": "us-east-2",
+            "ssmKeys": {
+                "stage": "prod",
+                "sharedBasePath": "/agent-enablement/prod/shared/",
+                "agentBasePathTemplate": "/agent-enablement/prod/agent/<principal.sub>/",
+            },
+        },
         "credentialSets": {
             "agentEnablement": {
                 "credentials": {
@@ -25,7 +33,14 @@ def _seed_cache(path: Path) -> None:
                     "sessionToken": "token",
                     "expiration": exp,
                 },
-                "references": {"awsRegion": "us-east-2"},
+                "references": {
+                    "awsRegion": "us-east-2",
+                    "ssmKeys": {
+                        "stage": "prod",
+                        "sharedBasePath": "/agent-enablement/prod/shared/",
+                        "agentBasePathTemplate": "/agent-enablement/prod/agent/<principal.sub>/",
+                    },
+                },
                 "cognitoTokens": {
                     "idToken": "a.b.c",
                     "accessToken": "d.e.f",
@@ -59,6 +74,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "help",
         "credentials.status",
         "credentials.exec",
+        "ssm.exec",
         "taskboard.exec",
         "messages.exec",
         "shortlinks.exec",
@@ -125,6 +141,23 @@ def test_tools_call_help_shortlinks_create_includes_target_url_example(monkeypat
     text = resp["result"]["content"][0]["text"]
     assert "shortlinks.exec" in text
     assert "targetUrl" in text
+
+
+def test_tools_call_help_ssm_get_includes_name_example(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 219,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "ssm.exec", "action": "get"}},
+        }
+    )
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "ssm.exec" in text
+    assert "name" in text
 
 
 def test_tools_call_help_examples_use_current_argument_names(monkeypatch, tmp_path: Path) -> None:
@@ -268,6 +301,109 @@ def test_credentials_exec_ensure(monkeypatch, tmp_path: Path) -> None:
     assert parsed["set"] == "agentEnablement"
     assert parsed["ready"] is True
     assert parsed["refreshed"] is False
+
+
+def test_ssm_exec_paths(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 220,
+            "method": "tools/call",
+            "params": {"name": "ssm.exec", "arguments": {"action": "paths", "args": {}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["kind"] == "enabler.ssm.paths.v1"
+    assert parsed["agentSub"] == "sub-1"
+    assert parsed["sharedBasePath"] == "/agent-enablement/prod/shared/"
+    assert parsed["agentBasePath"] == "/agent-enablement/prod/agent/sub-1/"
+
+
+def test_ssm_exec_list_and_get(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    class _FakeSsm:
+        def get_parameters_by_path(self, **kwargs):
+            assert kwargs["Path"] == "/agent-enablement/prod/agent/sub-1/"
+            return {
+                "Parameters": [
+                    {"Name": "/agent-enablement/prod/agent/sub-1/key-a"},
+                    {"Name": "/agent-enablement/prod/agent/sub-1/key-b"},
+                ],
+                "NextToken": "",
+            }
+
+        def get_parameter(self, **kwargs):
+            assert kwargs["Name"] == "/agent-enablement/prod/agent/sub-1/key-a"
+            return {
+                "Parameter": {
+                    "Name": kwargs["Name"],
+                    "Type": "SecureString",
+                    "Value": "secret-a",
+                    "Version": 3,
+                }
+            }
+
+    class _FakeSession:
+        def client(self, name: str):
+            assert name == "ssm"
+            return _FakeSsm()
+
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli._issued_session_from_doc",
+        lambda *, doc: (_FakeSession(), {"awsRegion": "us-east-2"}, "us-east-2"),
+    )
+    mcp = EnablerMcp(agent_id="agent-a")
+    list_resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 221,
+            "method": "tools/call",
+            "params": {"name": "ssm.exec", "arguments": {"action": "list", "args": {"scope": "agent"}}},
+        }
+    )
+    assert isinstance(list_resp, dict)
+    list_parsed = json.loads(list_resp["result"]["content"][0]["text"])
+    assert list_parsed["kind"] == "enabler.ssm.list.v1"
+    assert list_parsed["count"] == 2
+    assert "/agent-enablement/prod/agent/sub-1/key-a" in list_parsed["names"]
+
+    get_resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 222,
+            "method": "tools/call",
+            "params": {
+                "name": "ssm.exec",
+                "arguments": {"action": "get", "args": {"name": "/agent-enablement/prod/agent/sub-1/key-a"}},
+            },
+        }
+    )
+    assert isinstance(get_resp, dict)
+    get_parsed = json.loads(get_resp["result"]["content"][0]["text"])
+    assert get_parsed["kind"] == "enabler.ssm.get.v1"
+    assert get_parsed["value"] == "secret-a"
+
+
+def test_ssm_exec_get_rejects_out_of_scope_name(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 223,
+            "method": "tools/call",
+            "params": {
+                "name": "ssm.exec",
+                "arguments": {"action": "get", "args": {"name": "/agent-enablement/prod/agent/other-sub/key-a"}},
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    assert resp["error"]["data"]["code"] == "TOOL_EXECUTION_FAILED"
 
 
 def test_credentials_exec_ensure_force_refresh_rewrites_artifacts(monkeypatch, tmp_path: Path) -> None:

@@ -156,6 +156,7 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 - Exposed through `enabler-mcp` tools:
   - `help` (`tool?`, `action?`)
   - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
+  - `ssm.exec` (`action=help|paths|list|get`)
   - `shortlinks.exec` (`action=help|create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
 
@@ -210,6 +211,7 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 - Exposed through `enabler-mcp` tools:
   - `help` (`tool?`, `action?`)
   - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
+  - `ssm.exec` (`action=help|paths|list|get`)
   - `taskboard.exec` (`action=help|create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=help|send|recv|ack`)
   - `share.exec` (`action=help|file|folder`)

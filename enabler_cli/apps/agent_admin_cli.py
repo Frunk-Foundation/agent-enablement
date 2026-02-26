@@ -838,6 +838,147 @@ def _event_bus_name_from_arn(arn: str) -> str:
     return event_bus_name_from_arn(arn)
 
 
+def _ssm_paths_from_root_doc(root_doc: dict[str, Any], *, agent_id: str) -> dict[str, str]:
+    refs = root_doc.get("references")
+    refs = refs if isinstance(refs, dict) else {}
+    ssm_refs = refs.get("ssmKeys")
+    ssm_refs = ssm_refs if isinstance(ssm_refs, dict) else {}
+
+    shared_base = str(ssm_refs.get("sharedBasePath") or "").strip()
+    agent_tmpl = str(ssm_refs.get("agentBasePathTemplate") or "").strip()
+    stage = str(ssm_refs.get("stage") or "").strip()
+
+    principal = root_doc.get("principal")
+    principal = principal if isinstance(principal, dict) else {}
+    sub = str(principal.get("sub") or "").strip()
+
+    if not shared_base or not agent_tmpl or not sub:
+        raise UsageError("missing references.ssmKeys paths or principal.sub in credentials document")
+
+    agent_base = agent_tmpl.replace("<principal.sub>", sub)
+    if "<principal.sub>" in agent_base:
+        raise UsageError("invalid references.ssmKeys.agentBasePathTemplate")
+
+    shared_base = shared_base if shared_base.endswith("/") else f"{shared_base}/"
+    agent_base = agent_base if agent_base.endswith("/") else f"{agent_base}/"
+    return {
+        "stage": stage,
+        "sharedBasePath": shared_base,
+        "agentBasePath": agent_base,
+        "agentSub": sub,
+        "agentId": str(agent_id or "").strip(),
+    }
+
+
+def _require_allowed_ssm_path(*, target: str, shared_base: str, agent_base: str) -> None:
+    s = str(target or "").strip()
+    if not s:
+        raise UsageError("missing SSM path/name")
+    if s.startswith(shared_base) or s.startswith(agent_base):
+        return
+    raise UsageError("SSM path/name is outside allowed shared/agent prefixes")
+
+
+def cmd_ssm_paths(args: argparse.Namespace, g: GlobalOpts) -> int:
+    del args
+    root_doc = _resolve_runtime_credentials_doc(argparse.Namespace(), g)
+    paths = _ssm_paths_from_root_doc(root_doc, agent_id=g.agent_id)
+    refs = root_doc.get("references")
+    refs = refs if isinstance(refs, dict) else {}
+    region = str(refs.get("awsRegion") or "").strip()
+    out = {
+        "kind": "enabler.ssm.paths.v1",
+        "stage": paths["stage"],
+        "sharedBasePath": paths["sharedBasePath"],
+        "agentBasePath": paths["agentBasePath"],
+        "agentSub": paths["agentSub"],
+        "agentId": paths["agentId"],
+        "awsRegion": region,
+    }
+    _print_json(out, pretty=g.pretty)
+    return 0
+
+
+def cmd_ssm_list(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    paths = _ssm_paths_from_root_doc(root_doc, agent_id=g.agent_id)
+    sess, _refs, _region = _issued_session_from_doc(doc=active_doc)
+
+    scope = str(args.scope or "agent").strip().lower()
+    if scope not in {"agent", "shared"}:
+        raise UsageError("invalid scope (expected shared|agent)")
+    default_path = paths["agentBasePath"] if scope == "agent" else paths["sharedBasePath"]
+    path = str(args.path or default_path).strip()
+    path = path if path.endswith("/") else f"{path}/"
+    _require_allowed_ssm_path(target=path, shared_base=paths["sharedBasePath"], agent_base=paths["agentBasePath"])
+
+    ssm = sess.client("ssm")
+    params: dict[str, Any] = {
+        "Path": path,
+        "Recursive": bool(args.recursive),
+        "WithDecryption": False,
+    }
+    max_results = int(args.max_results) if args.max_results is not None else 0
+    if max_results > 0:
+        params["MaxResults"] = max_results
+    next_token = str(args.next_token or "").strip()
+    if next_token:
+        params["NextToken"] = next_token
+    try:
+        resp = ssm.get_parameters_by_path(**params)
+    except Exception as e:
+        raise OpError(f"ssm get-parameters-by-path failed: {e}") from e
+
+    names: list[str] = []
+    for p in resp.get("Parameters") or []:
+        if isinstance(p, dict):
+            n = str(p.get("Name") or "").strip()
+            if n:
+                names.append(n)
+    out = {
+        "kind": "enabler.ssm.list.v1",
+        "scope": scope,
+        "path": path,
+        "names": names,
+        "nextToken": str(resp.get("NextToken") or ""),
+        "count": len(names),
+    }
+    _print_json(out, pretty=g.pretty)
+    return 0
+
+
+def cmd_ssm_get(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    paths = _ssm_paths_from_root_doc(root_doc, agent_id=g.agent_id)
+    name = str(args.name or "").strip()
+    if not name:
+        raise UsageError("missing name")
+    _require_allowed_ssm_path(target=name, shared_base=paths["sharedBasePath"], agent_base=paths["agentBasePath"])
+    sess, _refs, _region = _issued_session_from_doc(doc=active_doc)
+    ssm = sess.client("ssm")
+    with_decryption = bool(args.with_decryption)
+    try:
+        resp = ssm.get_parameter(Name=name, WithDecryption=with_decryption)
+    except Exception as e:
+        raise OpError(f"ssm get-parameter failed: {e}") from e
+    param = resp.get("Parameter")
+    param = param if isinstance(param, dict) else {}
+    out = {
+        "kind": "enabler.ssm.get.v1",
+        "name": str(param.get("Name") or name),
+        "value": str(param.get("Value") or ""),
+        "type": str(param.get("Type") or ""),
+        "version": int(param.get("Version") or 0),
+        "lastModifiedDate": str(param.get("LastModifiedDate") or ""),
+    }
+    _print_json(out, pretty=g.pretty)
+    return 0
+
+
 def _parse_json_arg(raw: str | None, *, label: str) -> Any:
     s = (raw or "").strip()
     if not s:

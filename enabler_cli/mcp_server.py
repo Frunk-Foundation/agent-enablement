@@ -51,6 +51,9 @@ from .runtime_core import (
     cmd_taskboard_my_activity,
     cmd_taskboard_status,
     cmd_taskboard_unclaim,
+    cmd_ssm_paths,
+    cmd_ssm_list,
+    cmd_ssm_get,
 )
 from .apps.agent_admin_cli import _http_post_json
 from .cli_shared import ENABLER_API_KEY
@@ -159,6 +162,23 @@ class EnablerMcp:
                     "additionalProperties": False,
                 },
                 handler=self._tool_credentials_exec,
+            )
+        )
+        self._register(
+            ToolDef(
+                name="ssm.exec",
+                description="Execute SSM read actions (paths/list/get/help).",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["paths", "list", "get", "help"]},
+                        "args": {"type": "object"},
+                        "async": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_ssm_exec,
             )
         )
         self._register(
@@ -510,6 +530,15 @@ class EnablerMcp:
                     "delegation_redeem": "Redeem approved request and persist artifacts.",
                 },
             },
+            "ssm.exec": {
+                "brief": "Read SSM references, list names, and get allowed parameter values.",
+                "actions": {
+                    "help": "Describe SSM actions and examples.",
+                    "paths": "Return resolved allowed shared/agent base paths from credentials references.",
+                    "list": "List parameter names under allowed shared/agent paths.",
+                    "get": "Read one parameter value by full name when under allowed paths.",
+                },
+            },
             "taskboard.exec": {
                 "brief": "Taskboard operations for creating and managing tasks.",
                 "actions": {
@@ -567,6 +596,10 @@ class EnablerMcp:
             ("credentials.exec", "delegation_approve"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_status"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_redeem"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw", "switchToTarget": True},
+            ("ssm.exec", "help"): {"action": "list"},
+            ("ssm.exec", "paths"): {},
+            ("ssm.exec", "list"): {"scope": "agent", "recursive": True},
+            ("ssm.exec", "get"): {"name": "/agent-enablement/prod/agent/<principal.sub>/example-key"},
             ("taskboard.exec", "help"): {"action": "list"},
             ("taskboard.exec", "create"): {"name": "Sprint board"},
             ("taskboard.exec", "add"): {"boardId": "board-123", "lines": ["Ship docs", "Cut release"]},
@@ -597,6 +630,7 @@ class EnablerMcp:
             "help",
             "credentials.status",
             "credentials.exec",
+            "ssm.exec",
             "taskboard.exec",
             "messages.exec",
             "shortlinks.exec",
@@ -1068,6 +1102,36 @@ class EnablerMcp:
             )
         raise UsageError(f"unknown taskboard action: {action}")
 
+    def _dispatch_ssm(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "ssm.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="ssm.exec", action=target_action),
+            }
+        if action == "paths":
+            return self._cmd_json(cmd_ssm_paths, g=g)
+        if action == "list":
+            return self._cmd_json(
+                cmd_ssm_list,
+                g=g,
+                scope=args.get("scope"),
+                path=args.get("path"),
+                recursive=bool(args.get("recursive", True)),
+                max_results=args.get("maxResults"),
+                next_token=args.get("nextToken"),
+            )
+        if action == "get":
+            return self._cmd_json(
+                cmd_ssm_get,
+                g=g,
+                name=args.get("name"),
+                with_decryption=bool(args.get("withDecryption", True)),
+            )
+        raise UsageError(f"unknown ssm action: {action}")
+
     def _dispatch_messages(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "help":
             target_action = str(args.get("action") or "").strip()
@@ -1168,6 +1232,14 @@ class EnablerMcp:
             action_args = {}
         return self._dispatch_taskboard(action, action_args, g=g)
 
+    def _tool_ssm_exec(self, args: dict[str, Any]) -> Any:
+        g = self._g_for_agent(self._require_bound_agent_id())
+        action = str(args.get("action") or "").strip()
+        action_args = args.get("args")
+        if not isinstance(action_args, dict):
+            action_args = {}
+        return self._dispatch_ssm(action, action_args, g=g)
+
     def _tool_messages_exec(self, args: dict[str, Any]) -> Any:
         g = self._g_for_agent(self._require_bound_agent_id())
         action = str(args.get("action") or "").strip()
@@ -1228,6 +1300,8 @@ class EnablerMcp:
     def _auth_requirements(self, tool_name: str, arguments: dict[str, Any]) -> tuple[str | None, bool]:
         if tool_name == "taskboard.exec":
             return None, True
+        if tool_name == "ssm.exec":
+            return "agentEnablement", False
         if tool_name == "messages.exec":
             return "agentEnablement", False
         if tool_name == "share.exec":
@@ -1248,7 +1322,7 @@ class EnablerMcp:
             return tool.handler(arguments)
         if tool.name == "credentials.status":
             return tool.handler(arguments)
-        if tool.name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "share.exec"}:
+        if tool.name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec"}:
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
             if not isinstance(action_args, dict):
@@ -1256,6 +1330,8 @@ class EnablerMcp:
             if action == "help":
                 if tool.name == "taskboard.exec":
                     return self._dispatch_taskboard(action, action_args, g=g)
+                if tool.name == "ssm.exec":
+                    return self._dispatch_ssm(action, action_args, g=g)
                 if tool.name == "messages.exec":
                     return self._dispatch_messages(action, action_args, g=g)
                 if tool.name == "shortlinks.exec":
@@ -1272,6 +1348,12 @@ class EnablerMcp:
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_taskboard(action, action_args, g=g)
+        if tool.name == "ssm.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_ssm(action, action_args, g=g)
         if tool.name == "messages.exec":
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
@@ -1331,7 +1413,7 @@ class EnablerMcp:
         if not self._is_bound():
             allow_unbound = (
                 (tool.name == "credentials.exec" and action in {"delegation_request", "delegation_status", "delegation_redeem"})
-                or (tool.name in {"credentials.exec", "taskboard.exec", "messages.exec", "shortlinks.exec", "share.exec"} and action == "help")
+                or (tool.name in {"credentials.exec", "taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec"} and action == "help")
                 or tool.name == "help"
                 or tool.name == "credentials.status"
             )
@@ -1398,7 +1480,7 @@ class EnablerMcp:
 
             try:
                 wants_async = bool(arguments.get("async", False))
-                if wants_async and name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "share.exec", "credentials.exec"}:
+                if wants_async and name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec", "credentials.exec"}:
                     result = self._enqueue_operation(tool, arguments)
                 else:
                     result = self._execute_tool_now(

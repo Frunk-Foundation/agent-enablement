@@ -7,66 +7,50 @@ Read shared and per-agent secret values from SSM Parameter Store using issued ST
 Use this when you need API keys or configuration values that are distributed through Parameter Store.
 
 ## Inputs
-- `credentials.json` from `POST /v1/credentials`.
-- `references.ssmKeys.*` from that JSON.
+- Running `enabler-mcp` with a bound identity, or `enabler-mcp-cli` with `--agent-id`.
 
 ## Workflow
-1. Export the issued STS credentials (do not use `AWS_PROFILE`):
+1. Discover allowed paths through MCP:
 
 ```bash
-export AWS_REGION="$(jq -r '.references.awsRegion' credentials.json)"
-export AWS_ACCESS_KEY_ID="$(jq -r '.credentials.accessKeyId' credentials.json)"
-export AWS_SECRET_ACCESS_KEY="$(jq -r '.credentials.secretAccessKey' credentials.json)"
-export AWS_SESSION_TOKEN="$(jq -r '.credentials.sessionToken' credentials.json)"
+./enabler-mcp-cli --agent-id <agent-id> call ssm.exec --action paths
 ```
 
-2. Compute your shared + per-agent base paths:
+2. List parameter names in your agent scope:
 
 ```bash
-STAGE="$(jq -r '.references.ssmKeys.stage' credentials.json)"
-SUB="$(jq -r '.principal.sub' credentials.json)"
-SHARED_BASE="/agent-enablement/${STAGE}/shared/"
-AGENT_BASE="/agent-enablement/${STAGE}/agent/${SUB}/"
+./enabler-mcp-cli --agent-id <agent-id> call ssm.exec --action list --args-json '{"args":{"scope":"agent","recursive":true}}'
 ```
 
-3. Read a shared key (SecureString):
+3. Read one parameter by full name:
 
 ```bash
-aws ssm get-parameter \
-  --name "${SHARED_BASE}example-shared-key" \
-  --with-decryption \
-  --query 'Parameter.Value' \
-  --output text
+./enabler-mcp-cli --agent-id <agent-id> call ssm.exec --action get --args-json '{"args":{"name":"/agent-enablement/prod/agent/<principal.sub>/example-key"}}'
 ```
 
-4. Read your per-agent key (SecureString):
+4. Shared scope listing example:
 
 ```bash
-aws ssm get-parameter \
-  --name "${AGENT_BASE}example-agent-key" \
-  --with-decryption \
-  --query 'Parameter.Value' \
-  --output text
+./enabler-mcp-cli --agent-id <agent-id> call ssm.exec --action list --args-json '{"args":{"scope":"shared","recursive":true}}'
 ```
 
-5. List keys under a path (names only):
+5. Optional direct AWS CLI fallback (same issued STS credentials):
 
 ```bash
 aws ssm get-parameters-by-path \
-  --path "${AGENT_BASE}" \
+  --path "/agent-enablement/prod/agent/<principal.sub>/" \
   --recursive \
   --query 'Parameters[].Name' \
   --output text
 ```
 
 ## Outputs
-- Decrypted SecureString values returned by SSM.
+- Parameter names and plaintext SecureString values via MCP.
 
 ## Guardrails
 - Treat parameter values as secrets; do not log or share them.
-- Issued credentials can read only:
-  - `references.ssmKeys.sharedBasePath`
-  - `references.ssmKeys.agentBasePathTemplate` with `<principal.sub>` replaced by your own `principal.sub`
+- `ssm.exec get` returns plaintext value in tool output.
+- Issued credentials can read only shared path and your own agent path.
 - If you try to read another agent’s path, expect `AccessDenied`.
 - To share a key with more than one agent (but not all agents), duplicate the value into each agent’s per-agent path.
 

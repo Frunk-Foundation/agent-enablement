@@ -45,6 +45,9 @@ from ..apps.agent_admin_cli import (
     cmd_taskboard_my_activity,
     cmd_taskboard_status,
     cmd_taskboard_unclaim,
+    cmd_ssm_paths,
+    cmd_ssm_list,
+    cmd_ssm_get,
 )
 from ..cli_shared import GlobalOpts
 
@@ -96,4 +99,7 @@ __all__ = [
     "cmd_taskboard_status",
     "cmd_taskboard_audit",
     "cmd_taskboard_my_activity",
+    "cmd_ssm_paths",
+    "cmd_ssm_list",
+    "cmd_ssm_get",
 ]
