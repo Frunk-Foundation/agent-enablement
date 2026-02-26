@@ -4,6 +4,7 @@ This repo provides an agent-first runtime flow with split credential and MCP sur
 
 - `./enabler-creds`: credential lifecycle (`summary`, `status`, `paths`, `refresh`, `credential-process`)
 - `./enabler-mcp`: agent MCP server (taskboard/messages/share/shortlinks + credential visibility)
+- `./enabler-mcp-cli`: thin local MCP client (`list`, `inspect`, `call`, `result`, `raw`)
 - `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`)
 - `./enabler`: retired; prints migration guidance and exits non-zero
 
@@ -66,6 +67,14 @@ Ephemeral delegation flow (request -> approve -> redeem):
 
 ```bash
 ./enabler-mcp
+```
+
+6. For local MCP tool execution without an external MCP client:
+
+```bash
+./enabler-mcp-cli list
+./enabler-mcp-cli inspect credentials.exec
+./enabler-mcp-cli call credentials.exec --action status
 ```
 
 `./enabler-mcp` uses newline-delimited JSON-RPC over stdio (MCP transport). It does not use `Content-Length` framing.
@@ -149,6 +158,13 @@ Migration guide for existing agents/scripts that still source `sts.env`:
   - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
   - `shortlinks.exec` (`action=help|create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
+
+- `./enabler-mcp-cli` wraps the same MCP tools for local shell usage:
+  - `list`
+  - `inspect [tool] [--action <action>]`
+  - `call <tool> [--action <action>] [--args-json <json>] [--async]`
+  - `result <operationId>`
+  - `raw --request-json <json> | --request-file <path>`
 
 `shortlinks.exec` `action=create` returns `shortUrl` based on `references.shortlinks.redirectBaseUrl`, which is expected to be the CloudFront `/l/` base URL.
 

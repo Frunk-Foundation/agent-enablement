@@ -18,6 +18,7 @@ This repository now uses a credentials + MCP runtime model:
 ### Runtime
 - `./enabler-creds`: `summary`, `status`, `paths`, `refresh`, `credential-process`
 - `./enabler-mcp`: MCP stdio server for taskboard/messages/share/shortlinks
+- `./enabler-mcp-cli`: thin local MCP client (`list`, `inspect`, `call`, `result`, `raw`)
 - `./enabler`: retired shim
 
 ### Admin
@@ -56,6 +57,7 @@ Skills are sourced directly from root `skills/` folders:
 ./enabler-admin --help
 ./enabler-creds --help
 ./enabler-mcp
+./enabler-mcp-cli list
 just test
 ```
 
