@@ -108,6 +108,21 @@ class EnablerMcp:
     def _register_tools(self) -> None:
         self._register(
             ToolDef(
+                name="help",
+                description="Explain MCP tools and actions with usage examples.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "tool": {"type": "string"},
+                        "action": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+                handler=self._tool_help,
+            )
+        )
+        self._register(
+            ToolDef(
                 name="credentials.status",
                 description="Return credentials cache freshness and available sets.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
@@ -129,6 +144,7 @@ class EnablerMcp:
                                 "delegation_request",
                                 "delegation_status",
                                 "ensure",
+                                "help",
                                 "list_sessions",
                                 "set_agentid",
                             ],
@@ -159,6 +175,7 @@ class EnablerMcp:
                                 "unclaim",
                                 "done",
                                 "fail",
+                                "help",
                                 "status",
                                 "audit",
                                 "my_activity",
@@ -180,7 +197,7 @@ class EnablerMcp:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["send", "recv", "ack"]},
+                        "action": {"type": "string", "enum": ["send", "recv", "ack", "help"]},
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -197,7 +214,7 @@ class EnablerMcp:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["create", "resolve_url"]},
+                        "action": {"type": "string", "enum": ["create", "resolve_url", "help"]},
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -214,7 +231,7 @@ class EnablerMcp:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["share"]},
+                        "action": {"type": "string", "enum": ["share", "help"]},
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -436,6 +453,216 @@ class EnablerMcp:
         except Exception:
             return {"text": raw}
 
+    @staticmethod
+    def _help_catalog() -> dict[str, dict[str, Any]]:
+        return {
+            "help": {
+                "brief": "Explain MCP tools and actions with usage examples.",
+            },
+            "credentials.status": {
+                "brief": "Show cache freshness, active identity, and available credential sets.",
+            },
+            "credentials.exec": {
+                "brief": "Credential lifecycle actions (bootstrap, switching, delegation).",
+                "actions": {
+                    "help": "Describe credential actions and examples.",
+                    "ensure": "Validate required credential set/token availability.",
+                    "set_agentid": "Switch default runtime identity to another local session.",
+                    "list_sessions": "List local session ids available for switching.",
+                    "delegation_request": "Create request code for named-agent approval.",
+                    "delegation_approve": "Approve delegation request (named profiles only).",
+                    "delegation_status": "Get delegation request status by requestCode.",
+                    "delegation_redeem": "Redeem approved request and persist artifacts.",
+                },
+            },
+            "taskboard.exec": {
+                "brief": "Taskboard operations for creating and managing tasks.",
+                "actions": {
+                    "help": "Describe taskboard actions and examples.",
+                    "create": "Create a board.",
+                    "add": "Add task lines to a board.",
+                    "list": "List tasks with filters and pagination.",
+                    "claim": "Claim one task.",
+                    "unclaim": "Unclaim one task.",
+                    "done": "Mark a task done.",
+                    "fail": "Mark a task failed.",
+                    "status": "Get board status summary.",
+                    "audit": "Get task/board audit events.",
+                    "my_activity": "Get activity for current agent.",
+                },
+            },
+            "messages.exec": {
+                "brief": "Inbox messaging operations.",
+                "actions": {
+                    "help": "Describe message actions and examples.",
+                    "send": "Send message to another agent.",
+                    "recv": "Receive pending messages.",
+                    "ack": "Acknowledge a received message.",
+                },
+            },
+            "shortlinks.exec": {
+                "brief": "Shortlink creation and URL resolution.",
+                "actions": {
+                    "help": "Describe shortlinks actions and examples.",
+                    "create": "Create short code for target URL.",
+                    "resolve_url": "Render full resolve URL from short code.",
+                },
+            },
+            "files.exec": {
+                "brief": "File-sharing helper actions.",
+                "actions": {
+                    "help": "Describe file-share action and examples.",
+                    "share": "Upload/share one file payload.",
+                },
+            },
+            "ops.result": {
+                "brief": "Fetch status/result for async operations.",
+            },
+        }
+
+    def _help_text(self, *, tool_name: str = "", action: str = "") -> str:
+        catalog = self._help_catalog()
+        ordered_tools = [
+            "help",
+            "credentials.status",
+            "credentials.exec",
+            "taskboard.exec",
+            "messages.exec",
+            "shortlinks.exec",
+            "files.exec",
+            "ops.result",
+        ]
+        if not tool_name:
+            lines = ["# Tool Help Index", "", "Brief MCP tool summary:"]
+            for name in ordered_tools:
+                item = catalog[name]
+                lines.append(f"- `{name}`: {item['brief']}")
+            lines.extend(
+                [
+                    "",
+                    "Example:",
+                    "```json",
+                    '{"method":"tools/call","params":{"name":"help","arguments":{"tool":"messages.exec"}}}',
+                    "```",
+                ]
+            )
+            return "\n".join(lines)
+        if tool_name not in catalog:
+            valid = ", ".join(f"`{n}`" for n in ordered_tools)
+            raise UsageError(f"unknown tool for help: {tool_name}; valid tools: {valid}")
+        item = catalog[tool_name]
+        actions = item.get("actions")
+        if action:
+            if not isinstance(actions, dict):
+                raise UsageError(f"tool {tool_name} has no actions")
+            if action not in actions:
+                valid_actions = ", ".join(f"`{a}`" for a in sorted(actions.keys()))
+                raise UsageError(f"unknown action for {tool_name}: {action}; valid actions: {valid_actions}")
+            lines = [
+                f"# Help: `{tool_name}` action `{action}`",
+                "",
+                str(actions[action]),
+                "",
+                "Example:",
+                "```json",
+                json.dumps(
+                    {
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool_name,
+                            "arguments": {
+                                "action": action,
+                                "args": {},
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                "```",
+            ]
+            if action != "help":
+                lines.extend(
+                    [
+                        "",
+                        "Detail lookup example:",
+                        "```json",
+                        json.dumps(
+                            {
+                                "method": "tools/call",
+                                "params": {
+                                    "name": tool_name,
+                                    "arguments": {
+                                        "action": "help",
+                                        "args": {"action": action},
+                                    },
+                                },
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "```",
+                    ]
+                )
+            return "\n".join(lines)
+
+        lines = [f"# Help: `{tool_name}`", "", str(item["brief"])]
+        if isinstance(actions, dict):
+            lines.extend(["", "Actions:"])
+            for act, desc in actions.items():
+                lines.append(f"- `{act}`: {desc}")
+            lines.extend(
+                [
+                    "",
+                    "Examples:",
+                    "```json",
+                    json.dumps(
+                        {
+                            "method": "tools/call",
+                            "params": {"name": tool_name, "arguments": {"action": "help", "args": {}}},
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "```",
+                    "```json",
+                    json.dumps(
+                        {
+                            "method": "tools/call",
+                            "params": {
+                                "name": tool_name,
+                                "arguments": {"action": "help", "args": {"action": "help"}},
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "```",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "Example:",
+                    "```json",
+                    json.dumps(
+                        {"method": "tools/call", "params": {"name": tool_name, "arguments": {}}},
+                        separators=(",", ":"),
+                    ),
+                    "```",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _tool_help(self, args: dict[str, Any]) -> Any:
+        tool_name = str(args.get("tool") or "").strip()
+        action = str(args.get("action") or "").strip()
+        if action and not tool_name:
+            raise UsageError("tool is required when action is set")
+        return {
+            "kind": "enabler.mcp.help.v1",
+            "tool": tool_name,
+            "action": action,
+            "text": self._help_text(tool_name=tool_name, action=action),
+        }
+
     def _tool_credentials_status(self, _args: dict[str, Any]) -> Any:
         agent_id = self._current_agent_id()
         if not agent_id:
@@ -494,6 +721,14 @@ class EnablerMcp:
         }
 
     def _dispatch_credentials(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "credentials.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="credentials.exec", action=target_action),
+            }
         if action == "ensure":
             self._require_bound_agent_id()
             return self._credentials_ensure_payload(args, g=g)
@@ -676,6 +911,14 @@ class EnablerMcp:
         raise UsageError(f"unknown credentials action: {action}")
 
     def _dispatch_taskboard(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "taskboard.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="taskboard.exec", action=target_action),
+            }
         if action == "create":
             return self._cmd_json(cmd_taskboard_create, g=g, name=args.get("name"), json_output=True)
         if action == "add":
@@ -739,6 +982,14 @@ class EnablerMcp:
         raise UsageError(f"unknown taskboard action: {action}")
 
     def _dispatch_messages(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "messages.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="messages.exec", action=target_action),
+            }
         if action == "send":
             msg_json = args.get("messageJson")
             meta_json = args.get("metaJson")
@@ -773,6 +1024,14 @@ class EnablerMcp:
         raise UsageError(f"unknown messages action: {action}")
 
     def _dispatch_shortlinks(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "shortlinks.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="shortlinks.exec", action=target_action),
+            }
         if action == "create":
             return self._cmd_json(
                 cmd_shortlinks_create,
@@ -787,6 +1046,14 @@ class EnablerMcp:
         raise UsageError(f"unknown shortlinks action: {action}")
 
     def _dispatch_files(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "files.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="files.exec", action=target_action),
+            }
         if action == "share":
             return self._cmd_json(
                 cmd_files_share,
@@ -881,8 +1148,24 @@ class EnablerMcp:
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_credentials(action, action_args, g=g)
+        if tool.name == "help":
+            return tool.handler(arguments)
         if tool.name == "credentials.status":
             return tool.handler(arguments)
+        if tool.name in {"taskboard.exec", "messages.exec", "shortlinks.exec", "files.exec"}:
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            if action == "help":
+                if tool.name == "taskboard.exec":
+                    return self._dispatch_taskboard(action, action_args, g=g)
+                if tool.name == "messages.exec":
+                    return self._dispatch_messages(action, action_args, g=g)
+                if tool.name == "shortlinks.exec":
+                    return self._dispatch_shortlinks(action, action_args, g=g)
+                if tool.name == "files.exec":
+                    return self._dispatch_files(action, action_args, g=g)
         if tool.name != "credentials.status" and not self._is_bound():
             self._require_bound_agent_id()
         required_set, require_id_token = self._auth_requirements(tool.name, arguments)
@@ -950,7 +1233,13 @@ class EnablerMcp:
         action = str(arguments.get("action") or "").strip()
         agent_id = self._current_agent_id()
         if not self._is_bound():
-            if tool.name != "credentials.exec" or action not in {"delegation_request", "delegation_status", "delegation_redeem"}:
+            allow_unbound = (
+                (tool.name == "credentials.exec" and action in {"delegation_request", "delegation_status", "delegation_redeem"})
+                or (tool.name in {"credentials.exec", "taskboard.exec", "messages.exec", "shortlinks.exec", "files.exec"} and action == "help")
+                or tool.name == "help"
+                or tool.name == "credentials.status"
+            )
+            if not allow_unbound:
                 self._require_bound_agent_id()
         rec = OperationRecord(
             operation_id=op_id,

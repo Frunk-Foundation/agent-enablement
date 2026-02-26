@@ -144,9 +144,18 @@ Migration guide for existing agents/scripts that still source `sts.env`:
 ## Shortlinks Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
-  - `shortlinks.exec` (`action=create|resolve_url`)
+  - `help` (`tool?`, `action?`)
+  - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
+  - `shortlinks.exec` (`action=help|create|resolve_url`)
   - `ops.result` (for async polling when `async=true`)
+
+Help examples:
+
+```json
+{"method":"tools/call","params":{"name":"help","arguments":{}}}
+{"method":"tools/call","params":{"name":"help","arguments":{"tool":"messages.exec"}}}
+{"method":"tools/call","params":{"name":"messages.exec","arguments":{"action":"help","args":{"action":"recv"}}}}
+```
 
 ## MCP Startup Troubleshooting
 
@@ -180,10 +189,11 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 ## Taskboard Output Modes
 
 - Exposed through `enabler-mcp` tools:
-  - `credentials.exec` (`action=ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
-  - `taskboard.exec` (`action=create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
-  - `messages.exec` (`action=send|recv|ack`)
-  - `files.exec` (`action=share`)
+  - `help` (`tool?`, `action?`)
+  - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
+  - `taskboard.exec` (`action=help|create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
+  - `messages.exec` (`action=help|send|recv|ack`)
+  - `files.exec` (`action=help|share`)
   - `ops.result` (for async polling when `async=true`)
 
 ## Admin CLI

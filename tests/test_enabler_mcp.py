@@ -56,6 +56,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
     tools = resp["result"]["tools"]
     names = {t["name"] for t in tools}
     assert names == {
+        "help",
         "credentials.status",
         "credentials.exec",
         "taskboard.exec",
@@ -64,6 +65,76 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "files.exec",
         "ops.result",
     }
+
+
+def test_tools_call_help_index(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 210,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {}},
+        }
+    )
+
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "tool help index" in text.lower()
+    assert "credentials.exec" in text
+    assert "taskboard.exec" in text
+
+
+def test_tools_call_help_action_detail(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 211,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "messages.exec", "action": "recv"}},
+        }
+    )
+
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "messages.exec" in text
+    assert "recv" in text
+    assert "tools/call" in text
+
+
+def test_tools_call_help_rejects_action_without_tool(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 213,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"action": "recv"}},
+        }
+    )
+    assert isinstance(resp, dict)
+    assert resp["error"]["data"]["message"] == "tool is required when action is set"
+
+
+def test_tools_call_help_rejects_unknown_tool(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 214,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "bogus.exec"}},
+        }
+    )
+    assert isinstance(resp, dict)
+    assert "unknown tool for help: bogus.exec" in resp["error"]["data"]["message"]
 
 
 def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
@@ -100,6 +171,22 @@ def test_tools_call_credentials_status_unbound() -> None:
     assert parsed["kind"] == "enabler.creds.status.v1"
     assert parsed["bound"] is False
     assert parsed["agentId"] == ""
+
+
+def test_unbound_exec_help_action_succeeds() -> None:
+    mcp = EnablerMcp(agent_id="")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 212,
+            "method": "tools/call",
+            "params": {"name": "taskboard.exec", "arguments": {"action": "help", "args": {}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "taskboard.exec" in text
+    assert "create" in text
 
 
 def test_credentials_exec_ensure(monkeypatch, tmp_path: Path) -> None:
