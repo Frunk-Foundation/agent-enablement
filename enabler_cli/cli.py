@@ -5,6 +5,7 @@ import base64
 import contextlib
 import io
 import json
+import mimetypes
 import os
 import shutil
 import sys
@@ -1934,6 +1935,16 @@ def _s3_upload_scope_from_grants(doc: dict[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+def _s3_upload_extra_args_for_path(path: Path) -> dict[str, str]:
+    content_type, content_encoding = mimetypes.guess_type(str(path), strict=False)
+    extra_args: dict[str, str] = {
+        "ContentType": content_type or "application/octet-stream",
+    }
+    if content_encoding:
+        extra_args["ContentEncoding"] = content_encoding
+    return extra_args
+
+
 def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
     _require_boto3()
     local_path = Path(str(args.file_path)).expanduser().resolve()
@@ -1959,10 +1970,11 @@ def cmd_files_share(args: argparse.Namespace, g: GlobalOpts) -> int:
     object_uuid = uuid4_base58_22()
     filename = str(args.name or local_path.name or "file").strip()
     key = f"{allowed_prefix.rstrip('/')}/{object_uuid}/{filename}".lstrip("/")
+    extra_args = _s3_upload_extra_args_for_path(local_path)
 
     s3 = sess.client("s3")
     try:
-        s3.upload_file(str(local_path), bucket, key)
+        s3.upload_file(str(local_path), bucket, key, ExtraArgs=extra_args)
     except Exception as e:
         raise OpError(f"failed to upload file to s3://{bucket}/{key}: {e}") from e
 

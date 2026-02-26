@@ -1253,13 +1253,14 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
         ],
     }
 
-    uploaded: dict[str, str] = {}
+    uploaded: dict[str, object] = {}
 
     class _FakeS3:
-        def upload_file(self, local_path, bucket, key):
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
             uploaded["local_path"] = str(local_path)
             uploaded["bucket"] = bucket
             uploaded["key"] = key
+            uploaded["extra_args"] = dict(ExtraArgs or {})
 
     class _FakeSession:
         def __init__(self, **kwargs):
@@ -1290,6 +1291,7 @@ def test_cmd_files_share_uploads_and_returns_public_url(monkeypatch, tmp_path, c
     assert uploaded["bucket"] == "upload-bucket"
     assert uploaded["key"] == "uploads/u-1/1111111111111111111111/payload.txt"
     assert uploaded["region"] == "us-east-2"
+    assert uploaded["extra_args"] == {"ContentType": "text/plain"}
 
 
 def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
@@ -1315,12 +1317,15 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
         ],
     }
 
+    uploaded: dict[str, object] = {}
+
     class _FakeS3:
         def __init__(self):
             self.uploaded_key = ""
 
-        def upload_file(self, local_path, bucket, key):
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
             self.uploaded_key = key
+            uploaded["extra_args"] = dict(ExtraArgs or {})
             return None
 
     class _FakeSession:
@@ -1329,7 +1334,9 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
 
         def client(self, name):
             assert name == "s3"
-            return _FakeS3()
+            if not hasattr(self, "_s3"):
+                self._s3 = _FakeS3()
+            return self._s3
 
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
     monkeypatch.setattr(
@@ -1352,6 +1359,115 @@ def test_cmd_files_share_json_output(monkeypatch, tmp_path, capsys):
     assert payload["publicBaseUrl"] == "https://files.example.net/"
     assert payload["bucket"] == "upload-bucket"
     assert payload["key"] == "uploads/u-1/1111111111111111111111/renamed.txt"
+    assert uploaded["extra_args"] == {"ContentType": "text/plain"}
+
+
+def test_cmd_files_share_unknown_extension_falls_back_to_octet_stream(monkeypatch, tmp_path, capsys):
+    source_file = tmp_path / "payload.unknownext"
+    source_file.write_text("hello", encoding="utf-8")
+    creds_doc = {
+        "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
+        "credentials": {
+            "accessKeyId": "AKIA_TEST",
+            "secretAccessKey": "secret",
+            "sessionToken": "token",
+            "expiration": "2099-01-01T00:00:00Z",
+        },
+        "grants": [
+            {
+                "service": "s3",
+                "resources": ["arn:aws:s3:::upload-bucket/uploads/u-1/*"],
+            }
+        ],
+    }
+    uploaded: dict[str, object] = {}
+
+    class _FakeS3:
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
+            uploaded["extra_args"] = dict(ExtraArgs or {})
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def client(self, name):
+            assert name == "s3"
+            return _FakeS3()
+
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli.boto3",
+        type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
+    )
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
+    args = argparse.Namespace(
+        file_path=str(source_file),
+        name=None,
+        json_output=False,
+    )
+    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert uploaded["extra_args"] == {"ContentType": "application/octet-stream"}
+    assert capsys.readouterr().out.strip().startswith("https://files.example.net/uploads/u-1/")
+
+
+def test_cmd_files_share_sets_content_encoding_when_detected(monkeypatch, tmp_path, capsys):
+    source_file = tmp_path / "payload.html.gz"
+    source_file.write_text("hello", encoding="utf-8")
+    creds_doc = {
+        "awsRegion": "us-east-2",
+        "references": {
+            "files": {"publicBaseUrl": "https://files.example.net/"},
+            "awsRegion": "us-east-2",
+        },
+        "credentials": {
+            "accessKeyId": "AKIA_TEST",
+            "secretAccessKey": "secret",
+            "sessionToken": "token",
+            "expiration": "2099-01-01T00:00:00Z",
+        },
+        "grants": [
+            {
+                "service": "s3",
+                "resources": ["arn:aws:s3:::upload-bucket/uploads/u-1/*"],
+            }
+        ],
+    }
+    uploaded: dict[str, object] = {}
+
+    class _FakeS3:
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
+            uploaded["extra_args"] = dict(ExtraArgs or {})
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def client(self, name):
+            assert name == "s3"
+            return _FakeS3()
+
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli.boto3",
+        type("B3", (), {"session": type("S", (), {"Session": _FakeSession})})(),
+    )
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.uuid4_base58_22", lambda: "1111111111111111111111")
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli.mimetypes.guess_type",
+        lambda _path, strict=False: ("text/html", "gzip"),
+    )
+    args = argparse.Namespace(
+        file_path=str(source_file),
+        name=None,
+        json_output=False,
+    )
+    assert cmd_files_share(args, _g(cache_path=str(tmp_path / ".enabler" / "credentials.json"))) == 0
+    assert uploaded["extra_args"] == {"ContentType": "text/html", "ContentEncoding": "gzip"}
+    assert capsys.readouterr().out.strip().startswith("https://files.example.net/uploads/u-1/")
 
 
 def test_cmd_files_share_requires_credentials_region(monkeypatch, tmp_path):
@@ -1402,13 +1518,14 @@ def test_cmd_files_share_uploads_then_fails_without_public_base_url(monkeypatch,
         "references": {"awsRegion": "us-east-2"},
     }
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
-    uploaded: dict[str, str] = {}
+    uploaded: dict[str, object] = {}
 
     class _FakeS3:
-        def upload_file(self, local_path, bucket, key):
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
             uploaded["local_path"] = str(local_path)
             uploaded["bucket"] = bucket
             uploaded["key"] = key
+            uploaded["extra_args"] = dict(ExtraArgs or {})
 
     class _FakeSession:
         def __init__(self, **kwargs):
@@ -1434,6 +1551,7 @@ def test_cmd_files_share_uploads_then_fails_without_public_base_url(monkeypatch,
     assert capsys.readouterr().out.strip() == ""
     assert uploaded["bucket"] == "upload-bucket"
     assert uploaded["key"] == "uploads/u-1/1111111111111111111111/payload.txt"
+    assert uploaded["extra_args"] == {"ContentType": "text/plain"}
 
 
 def test_cmd_files_share_json_uploads_then_fails_without_public_base_url(monkeypatch, tmp_path, capsys):
@@ -1458,7 +1576,7 @@ def test_cmd_files_share_json_uploads_then_fails_without_public_base_url(monkeyp
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc", lambda _args, _g: creds_doc)
 
     class _FakeS3:
-        def upload_file(self, local_path, bucket, key):
+        def upload_file(self, local_path, bucket, key, ExtraArgs=None):
             return None
 
     class _FakeSession:

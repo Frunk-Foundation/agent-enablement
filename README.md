@@ -197,7 +197,7 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
   - `files.exec` (`action=help|share`)
   - `ops.result` (for async polling when `async=true`)
 
-`files.exec` `action=share` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. If that reference is missing, upload occurs but the command fails with a configuration error.
+`files.exec` `action=share` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type. If that reference is missing, upload occurs but the command fails with a configuration error.
 
 ## Admin CLI
 
