@@ -269,10 +269,23 @@ def test_delegation_request_rejects_non_credentials_endpoint(tmp_path: Path, mon
 
 def test_requires_agent_id(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 1
     assert "missing agent id" in str(result.exception)
+
+
+def test_uses_cognito_username_as_default_agent_id(tmp_path: Path, monkeypatch) -> None:
+    _session_cache(tmp_path, monkeypatch, agent_id="leticiaoc")
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "leticiaoc")
+
+    result = runner.invoke(app, ["--no-auto-refresh-creds", "status"])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.stdout)
+    assert parsed["cachePath"].endswith("/sessions/leticiaoc/session.json")
 
 
 def test_session_list_and_revoke(tmp_path: Path, monkeypatch) -> None:

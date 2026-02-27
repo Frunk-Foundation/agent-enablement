@@ -274,6 +274,13 @@ def test_tools_call_credentials_status_unbound() -> None:
     assert parsed["agentId"] == ""
 
 
+def test_cognito_username_env_binds_default_agent_id(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "leticiaoc")
+    mcp = EnablerMcp(agent_id="")
+    assert mcp.g.agent_id == "leticiaoc"
+
+
 def test_unbound_exec_help_action_succeeds() -> None:
     mcp = EnablerMcp(agent_id="")
     resp = mcp.handle_request(

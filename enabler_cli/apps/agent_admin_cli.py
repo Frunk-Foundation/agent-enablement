@@ -1380,7 +1380,12 @@ def _apply_global_env(args: argparse.Namespace) -> GlobalOpts:
         os.environ["AWS_REGION"] = str(args.region).strip()
     # If the user didn't explicitly pass --stack, defer to env.
     stack = (getattr(args, "stack", None) or _env_or_none("STACK") or "AgentEnablementStack").strip()
-    agent_id = str(getattr(args, "agent_id", None) or _env_or_none(ENABLER_AGENT_ID) or "").strip()
+    agent_id = str(
+        getattr(args, "agent_id", None)
+        or _env_or_none(ENABLER_AGENT_ID)
+        or _env_or_none(ENABLER_COGNITO_USERNAME)
+        or ""
+    ).strip()
     creds_cache_path = (
         getattr(args, "creds_cache", None)
         or _env_or_none(ENABLER_CREDS_CACHE)
