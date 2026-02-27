@@ -1,7 +1,9 @@
 import argparse
 import json
+from datetime import datetime, timezone
 
 from enabler_cli.admin_commands import cmd_agent_decommission
+from enabler_cli.admin_commands import cmd_cognito_list_users
 from enabler_cli.admin_commands import cmd_cognito_remove_user
 from enabler_cli.admin_commands import cmd_agent_seed_profile
 from enabler_cli.cli_shared import GlobalOpts
@@ -53,6 +55,191 @@ def test_cmd_cognito_remove_user_calls_admin_delete_user(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["removed"] is True
     assert calls == {"user_pool_id": "pool-1", "username": "alice"}
+
+
+def test_cmd_cognito_list_users_filters_ephemeral_by_default(monkeypatch, capsys):
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["UserPoolId"] == "pool-1"
+            return [
+                {
+                    "Users": [
+                        {
+                            "Username": "ephem-abc",
+                            "UserStatus": "CONFIRMED",
+                            "Enabled": True,
+                            "UserCreateDate": datetime(2026, 2, 27, 12, 0, 0, tzinfo=timezone.utc),
+                            "UserLastModifiedDate": datetime(2026, 2, 27, 12, 1, 0, tzinfo=timezone.utc),
+                            "Attributes": [{"Name": "email", "Value": "ephem@example.com"}],
+                        },
+                        {
+                            "Username": "alice",
+                            "UserStatus": "CONFIRMED",
+                            "Enabled": True,
+                            "UserCreateDate": datetime(2026, 2, 27, 12, 2, 0, tzinfo=timezone.utc),
+                            "UserLastModifiedDate": datetime(2026, 2, 27, 12, 3, 0, tzinfo=timezone.utc),
+                            "Attributes": [{"Name": "email", "Value": "alice@example.com"}],
+                        },
+                    ]
+                }
+            ]
+
+    class FakeCognito:
+        def get_paginator(self, name):
+            assert name == "list_users"
+            return FakePaginator()
+
+    class FakeSession:
+        def client(self, name):
+            assert name == "cognito-idp"
+            return FakeCognito()
+
+    fake_ctx = _FakeAdminContext(session=FakeSession(), outputs={})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(user_pool_id=None, include_ephemeral=False, json=False)
+    assert cmd_cognito_list_users(args, _g()) == 0
+    out = capsys.readouterr().out
+    assert "alice" in out
+    assert "ephem-abc" not in out
+
+
+def test_cmd_cognito_list_users_json_includes_ephemeral_when_requested(monkeypatch, capsys):
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["UserPoolId"] == "pool-x"
+            return [
+                {
+                    "Users": [
+                        {
+                            "Username": "ephem-abc",
+                            "UserStatus": "CONFIRMED",
+                            "Enabled": True,
+                            "UserCreateDate": datetime(2026, 2, 27, 12, 0, 0, tzinfo=timezone.utc),
+                            "UserLastModifiedDate": datetime(2026, 2, 27, 12, 1, 0, tzinfo=timezone.utc),
+                            "Attributes": [{"Name": "custom:type", "Value": "ephemeral"}],
+                        }
+                    ]
+                }
+            ]
+
+    class FakeCognito:
+        def get_paginator(self, name):
+            assert name == "list_users"
+            return FakePaginator()
+
+    class FakeSession:
+        def client(self, name):
+            assert name == "cognito-idp"
+            return FakeCognito()
+
+    fake_ctx = _FakeAdminContext(session=FakeSession(), outputs={})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(user_pool_id="pool-x", include_ephemeral=True, json=True)
+    assert cmd_cognito_list_users(args, _g()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["userPoolId"] == "pool-x"
+    assert out["includeEphemeral"] is True
+    assert out["count"] == 1
+    assert out["users"][0]["username"] == "ephem-abc"
+    assert out["users"][0]["attributes"] == [{"name": "custom:type", "value": "ephemeral"}]
+
+
+def test_cmd_cognito_list_users_merges_pagination(monkeypatch, capsys):
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["UserPoolId"] == "pool-1"
+            return [
+                {
+                    "Users": [
+                        {
+                            "Username": "alice",
+                            "UserStatus": "CONFIRMED",
+                            "Enabled": True,
+                        }
+                    ]
+                },
+                {
+                    "Users": [
+                        {
+                            "Username": "bob",
+                            "UserStatus": "CONFIRMED",
+                            "Enabled": True,
+                        }
+                    ]
+                },
+            ]
+
+    class FakeCognito:
+        def get_paginator(self, name):
+            assert name == "list_users"
+            return FakePaginator()
+
+    class FakeSession:
+        def client(self, name):
+            assert name == "cognito-idp"
+            return FakeCognito()
+
+    fake_ctx = _FakeAdminContext(session=FakeSession(), outputs={})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(user_pool_id=None, include_ephemeral=False, json=True)
+    assert cmd_cognito_list_users(args, _g()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["count"] == 2
+    assert [u["username"] for u in out["users"]] == ["alice", "bob"]
+
+
+def test_cmd_cognito_list_users_empty_result(monkeypatch, capsys):
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["UserPoolId"] == "pool-1"
+            return [{"Users": []}]
+
+    class FakeCognito:
+        def get_paginator(self, name):
+            assert name == "list_users"
+            return FakePaginator()
+
+    class FakeSession:
+        def client(self, name):
+            assert name == "cognito-idp"
+            return FakeCognito()
+
+    fake_ctx = _FakeAdminContext(session=FakeSession(), outputs={})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(user_pool_id=None, include_ephemeral=False, json=True)
+    assert cmd_cognito_list_users(args, _g()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["count"] == 0
+    assert out["users"] == []
+
+
+def test_cmd_cognito_list_users_empty_result_plain_text(monkeypatch, capsys):
+    class FakePaginator:
+        def paginate(self, **kwargs):
+            assert kwargs["UserPoolId"] == "pool-1"
+            return [{"Users": []}]
+
+    class FakeCognito:
+        def get_paginator(self, name):
+            assert name == "list_users"
+            return FakePaginator()
+
+    class FakeSession:
+        def client(self, name):
+            assert name == "cognito-idp"
+            return FakeCognito()
+
+    fake_ctx = _FakeAdminContext(session=FakeSession(), outputs={})
+    monkeypatch.setattr("enabler_cli.admin_commands.build_admin_context", lambda _g: fake_ctx)
+
+    args = argparse.Namespace(user_pool_id=None, include_ephemeral=False, json=False)
+    assert cmd_cognito_list_users(args, _g()) == 0
+    out = capsys.readouterr().out
+    assert "No users found." in out
 
 
 def test_cmd_agent_decommission_dry_run_outputs_actions(monkeypatch, capsys):

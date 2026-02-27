@@ -273,6 +273,13 @@ def _cognito_auth_result(
     return auth if isinstance(auth, dict) else {}
 
 
+def _to_iso8601(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        with contextlib.suppress(Exception):
+            return str(value.isoformat())
+    return str(value or "").strip()
+
+
 def cmd_cognito_create_user(args: argparse.Namespace, g: GlobalOpts) -> int:
     creds = _resolve_cognito_basic_credentials(username=args.username, password=args.password)
     ctx = build_admin_context(g)
@@ -330,6 +337,72 @@ def cmd_cognito_remove_user(args: argparse.Namespace, g: GlobalOpts) -> int:
     except Exception as e:
         raise OpError(f"cognito admin-delete-user failed: {e}") from e
     _print_json({"username": username, "userPoolId": user_pool_id, "removed": True}, pretty=g.pretty)
+    return 0
+
+
+def cmd_cognito_list_users(args: argparse.Namespace, g: GlobalOpts) -> int:
+    ctx = build_admin_context(g)
+    user_pool_id = ctx.resolve_user_pool_id(args.user_pool_id)
+    include_ephemeral = bool(getattr(args, "include_ephemeral", False))
+    json_output = bool(getattr(args, "json", False))
+    c = ctx.session.client("cognito-idp")
+    users: list[dict[str, Any]] = []
+    try:
+        paginator = c.get_paginator("list_users")
+        for page in paginator.paginate(UserPoolId=user_pool_id):
+            page_users = page.get("Users") or []
+            if not isinstance(page_users, list):
+                continue
+            for raw in page_users:
+                if not isinstance(raw, dict):
+                    continue
+                username = str(raw.get("Username") or "").strip()
+                if not username:
+                    continue
+                if not include_ephemeral and username.startswith("ephem-"):
+                    continue
+                attrs_out: list[dict[str, str]] = []
+                attrs = raw.get("Attributes") or []
+                if isinstance(attrs, list):
+                    for attr in attrs:
+                        if not isinstance(attr, dict):
+                            continue
+                        name = str(attr.get("Name") or "").strip()
+                        if not name:
+                            continue
+                        attrs_out.append({"name": name, "value": str(attr.get("Value") or "")})
+                users.append(
+                    {
+                        "username": username,
+                        "status": str(raw.get("UserStatus") or "").strip(),
+                        "enabled": bool(raw.get("Enabled")),
+                        "createdAt": _to_iso8601(raw.get("UserCreateDate")),
+                        "updatedAt": _to_iso8601(raw.get("UserLastModifiedDate")),
+                        "attributes": attrs_out,
+                    }
+                )
+    except Exception as e:
+        raise OpError(f"cognito list-users failed: {e}") from e
+
+    if json_output:
+        _print_json(
+            {
+                "userPoolId": user_pool_id,
+                "includeEphemeral": include_ephemeral,
+                "count": len(users),
+                "users": users,
+            },
+            pretty=g.pretty,
+        )
+        return 0
+
+    if not users:
+        sys.stdout.write("No users found.\n")
+        return 0
+    for user in users:
+        sys.stdout.write(
+            f"{user['username']}\t{user['status']}\t{str(user['enabled']).lower()}\t{user['createdAt']}\n"
+        )
     return 0
 
 

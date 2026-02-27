@@ -195,6 +195,7 @@ def test_admin_cognito_help_lists_remove_user():
     result = runner.invoke(admin_app, ["cognito", "--help"])
     assert result.exit_code == 0
     assert "remove-user" in result.output
+    assert "list-users" in result.output
 
 
 def test_admin_agent_help_lists_decommission():

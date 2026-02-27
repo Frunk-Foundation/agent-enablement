@@ -33,6 +33,7 @@ from ..admin_commands import (
     cmd_agent_seed_profile,
     cmd_cognito_create_user,
     cmd_cognito_id_token,
+    cmd_cognito_list_users,
     cmd_cognito_remove_user,
     cmd_cognito_rotate_password,
     cmd_ssm_api_key,
@@ -3006,6 +3007,22 @@ def cognito_remove_user(
     user_pool_id: str | None = typer.Option(None, "--user-pool-id", help="Override user pool id (otherwise stack output UserPoolId)"),
 ) -> None:
     _invoke_from_locals(ctx, cmd_cognito_remove_user, locals())
+
+
+@cognito_app.command("list-users", help="List Cognito users (default excludes ephemeral usernames).")
+def cognito_list_users(
+    ctx: typer.Context,
+    user_pool_id: str | None = typer.Option(None, "--user-pool-id", help="Override user pool id (otherwise stack output UserPoolId)"),
+    include_ephemeral: bool = typer.Option(False, "--include-ephemeral", help="Include usernames starting with ephem-"),
+    json_out: bool = typer.Option(False, "--json", help="Print JSON output"),
+) -> None:
+    _invoke(
+        ctx,
+        cmd_cognito_list_users,
+        user_pool_id=user_pool_id,
+        include_ephemeral=include_ephemeral,
+        json=json_out,
+    )
 
 
 @cognito_app.command("id-token", help="Authenticate a Cognito user and print token output.")

@@ -237,6 +237,9 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 
 ```bash
 ./enabler-admin cognito create-user --username <u> --password <p>
+./enabler-admin cognito list-users
+./enabler-admin cognito list-users --include-ephemeral
+./enabler-admin cognito list-users --json
 ./enabler-admin cognito remove-user <u>
 ./enabler-admin agent onboard <username> <password>
 ./enabler-admin agent onboard <username> <password> --profile-type named
