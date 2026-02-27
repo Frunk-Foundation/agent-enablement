@@ -177,7 +177,7 @@ def test_main_loads_dotenv_with_package_defaults(monkeypatch):
 def test_main_returns_app_exit_code(monkeypatch):
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.load_dotenv", lambda *a, **k: True)
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.app", lambda *a, **k: 2)
-    assert main(["share", "file"]) == 2
+    assert main(["fileshare", "file"]) == 2
 
 
 def test_main_admin_usage_error_prints_command_help(capsys):

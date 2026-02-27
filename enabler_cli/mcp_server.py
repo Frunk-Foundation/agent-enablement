@@ -249,8 +249,8 @@ class EnablerMcp:
         )
         self._register(
             ToolDef(
-                name="share.exec",
-                description="Execute share actions (file/folder/help). file args: filePath[, name]; folder args: folderPath[, includeHidden, followSymlinks, rootDocument].",
+                name="fileshare.exec",
+                description="Execute fileshare actions (file/folder/help). file args: filePath[, name]; folder args: folderPath[, includeHidden, followSymlinks, rootDocument].",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -261,7 +261,7 @@ class EnablerMcp:
                     "required": ["action"],
                     "additionalProperties": False,
                 },
-                handler=self._tool_share_exec,
+                handler=self._tool_fileshare_exec,
             )
         )
         self._register(
@@ -572,10 +572,10 @@ class EnablerMcp:
                     "resolve_url": "Render full resolve URL from short code. args: code.",
                 },
             },
-            "share.exec": {
-                "brief": "Share helper actions for file/folder uploads.",
+            "fileshare.exec": {
+                "brief": "Fileshare helper actions for file/folder uploads.",
                 "actions": {
-                    "help": "Describe share actions and examples.",
+                    "help": "Describe fileshare actions and examples.",
                     "file": "Upload/share one file payload. args: filePath (optional: name).",
                     "folder": "Upload/share a folder recursively under one prefix. args: folderPath (optional: includeHidden, followSymlinks, rootDocument).",
                 },
@@ -618,9 +618,9 @@ class EnablerMcp:
             ("shortlinks.exec", "help"): {"action": "create"},
             ("shortlinks.exec", "create"): {"targetUrl": "https://d1z3djyrl2kl58.cloudfront.net/path/file.html"},
             ("shortlinks.exec", "resolve_url"): {"code": "7wKzbwvsMDmDmpvB69QRtA"},
-            ("share.exec", "help"): {"action": "file"},
-            ("share.exec", "file"): {"filePath": "README.md"},
-            ("share.exec", "folder"): {"folderPath": "docs/site", "rootDocument": "index.html"},
+            ("fileshare.exec", "help"): {"action": "file"},
+            ("fileshare.exec", "file"): {"filePath": "README.md"},
+            ("fileshare.exec", "folder"): {"folderPath": "docs/site", "rootDocument": "index.html"},
         }
         return dict(examples.get((tool_name, action), {}))
 
@@ -634,7 +634,7 @@ class EnablerMcp:
             "taskboard.exec",
             "messages.exec",
             "shortlinks.exec",
-            "share.exec",
+            "fileshare.exec",
             "ops.result",
         ]
         if not tool_name:
@@ -1201,9 +1201,9 @@ class EnablerMcp:
             target_action = str(args.get("action") or "").strip()
             return {
                 "kind": "enabler.mcp.help.v1",
-                "tool": "share.exec",
+                "tool": "fileshare.exec",
                 "action": target_action,
-                "text": self._help_text(tool_name="share.exec", action=target_action),
+                "text": self._help_text(tool_name="fileshare.exec", action=target_action),
             }
         if action == "file":
             return self._cmd_json(
@@ -1222,7 +1222,7 @@ class EnablerMcp:
                 follow_symlinks=bool(args.get("followSymlinks", False)),
                 root_document=args.get("rootDocument"),
             )
-        raise UsageError(f"unknown share action: {action}")
+        raise UsageError(f"unknown fileshare action: {action}")
 
     def _tool_taskboard_exec(self, args: dict[str, Any]) -> Any:
         g = self._g_for_agent(self._require_bound_agent_id())
@@ -1264,6 +1264,9 @@ class EnablerMcp:
             action_args = {}
         return self._dispatch_share(action, action_args, g=g)
 
+    def _tool_fileshare_exec(self, args: dict[str, Any]) -> Any:
+        return self._tool_share_exec(args)
+
     def _tool_credentials_exec(self, args: dict[str, Any]) -> Any:
         g = self._g_for_agent(self._current_agent_id())
         action = str(args.get("action") or "").strip()
@@ -1304,7 +1307,7 @@ class EnablerMcp:
             return "agentEnablement", False
         if tool_name == "messages.exec":
             return "agentEnablement", False
-        if tool_name == "share.exec":
+        if tool_name == "fileshare.exec":
             return "agentEnablement", False
         if tool_name == "shortlinks.exec":
             action = str(arguments.get("action") or "").strip()
@@ -1322,7 +1325,7 @@ class EnablerMcp:
             return tool.handler(arguments)
         if tool.name == "credentials.status":
             return tool.handler(arguments)
-        if tool.name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec"}:
+        if tool.name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec"}:
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
             if not isinstance(action_args, dict):
@@ -1336,7 +1339,7 @@ class EnablerMcp:
                     return self._dispatch_messages(action, action_args, g=g)
                 if tool.name == "shortlinks.exec":
                     return self._dispatch_shortlinks(action, action_args, g=g)
-                if tool.name == "share.exec":
+                if tool.name == "fileshare.exec":
                     return self._dispatch_share(action, action_args, g=g)
         if tool.name != "credentials.status" and not self._is_bound():
             self._require_bound_agent_id()
@@ -1366,7 +1369,7 @@ class EnablerMcp:
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_shortlinks(action, action_args, g=g)
-        if tool.name == "share.exec":
+        if tool.name == "fileshare.exec":
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
             if not isinstance(action_args, dict):
@@ -1413,7 +1416,7 @@ class EnablerMcp:
         if not self._is_bound():
             allow_unbound = (
                 (tool.name == "credentials.exec" and action in {"delegation_request", "delegation_status", "delegation_redeem"})
-                or (tool.name in {"credentials.exec", "taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec"} and action == "help")
+                or (tool.name in {"credentials.exec", "taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec"} and action == "help")
                 or tool.name == "help"
                 or tool.name == "credentials.status"
             )
@@ -1480,7 +1483,7 @@ class EnablerMcp:
 
             try:
                 wants_async = bool(arguments.get("async", False))
-                if wants_async and name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "share.exec", "credentials.exec"}:
+                if wants_async and name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec", "credentials.exec"}:
                     result = self._enqueue_operation(tool, arguments)
                 else:
                     result = self._execute_tool_now(

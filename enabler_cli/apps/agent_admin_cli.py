@@ -2680,7 +2680,7 @@ handoff_admin_app = typer.Typer(
     no_args_is_help=True,
 )
 messages_app = typer.Typer(help="Message helpers (issued STS creds, no profile)", no_args_is_help=True)
-share_app = typer.Typer(help="Share helpers (file and folder upload)", no_args_is_help=True)
+fileshare_app = typer.Typer(help="Fileshare helpers (file and folder upload)", no_args_is_help=True)
 shortlinks_app = typer.Typer(help="Shortlink helpers", no_args_is_help=True)
 taskboard_app = typer.Typer(
     help="Taskboard helpers (default: human-readable output; use --json for raw API responses)",
@@ -2688,7 +2688,7 @@ taskboard_app = typer.Typer(
 )
 
 # Agent CLI surface.
-app.add_typer(share_app, name="share")
+app.add_typer(fileshare_app, name="fileshare")
 app.add_typer(messages_app, name="messages")
 app.add_typer(shortlinks_app, name="shortlinks")
 app.add_typer(taskboard_app, name="taskboard")
@@ -3191,11 +3191,11 @@ def agent_credential_process(
     )
 
 
-@share_app.command(
+@fileshare_app.command(
     "file",
     help="Upload one file and return the external HTTPS URL (use --json for S3 metadata).",
 )
-def share_file(
+def fileshare_file(
     ctx: typer.Context,
     file_path: str = typer.Argument(..., help="Local file path to upload"),
     name: str | None = typer.Option(None, "--name", help="Optional object filename override"),
@@ -3204,11 +3204,11 @@ def share_file(
     _invoke_from_locals(ctx, cmd_share_file, locals())
 
 
-@share_app.command(
+@fileshare_app.command(
     "folder",
     help="Upload a folder recursively under one shared key prefix and return a manifest JSON.",
 )
-def share_folder(
+def fileshare_folder(
     ctx: typer.Context,
     folder_path: str = typer.Argument(..., help="Local folder path to upload recursively"),
     include_hidden: bool = typer.Option(False, "--include-hidden", help="Include hidden files/directories"),

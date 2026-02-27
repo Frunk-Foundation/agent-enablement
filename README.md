@@ -3,7 +3,7 @@
 This repo provides an agent-first runtime flow with split credential and MCP surfaces:
 
 - `./enabler-creds`: credential lifecycle (`summary`, `status`, `paths`, `refresh`, `credential-process`)
-- `./enabler-mcp`: agent MCP server (taskboard/messages/share/shortlinks + credential visibility)
+- `./enabler-mcp`: agent MCP server (taskboard/messages/fileshare/shortlinks + credential visibility)
 - `./enabler-mcp-cli`: thin local MCP client (`list`, `inspect`, `call`, `result`, `raw`)
 - `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`)
 - `./enabler`: retired; prints migration guidance and exits non-zero
@@ -214,12 +214,12 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
   - `ssm.exec` (`action=help|paths|list|get`)
   - `taskboard.exec` (`action=help|create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
   - `messages.exec` (`action=help|send|recv|ack`)
-  - `share.exec` (`action=help|file|folder`)
+  - `fileshare.exec` (`action=help|file|folder`)
   - `ops.result` (for async polling when `async=true`)
 
-`share.exec` `action=file` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type.
+`fileshare.exec` `action=file` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type.
 
-`share.exec` `action=folder` uploads recursively under one shared key prefix (preserving relative paths) and returns a manifest with `siteBaseUrl`, `rootUrl`, and per-file URLs. This supports static-site style uploads with multiple pages/assets under one prefix.
+`fileshare.exec` `action=folder` uploads recursively under one shared key prefix (preserving relative paths) and returns a manifest with `siteBaseUrl`, `rootUrl`, and per-file URLs. This supports static-site style uploads with multiple pages/assets under one prefix.
 
 ## Admin CLI
 

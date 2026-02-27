@@ -78,7 +78,7 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "taskboard.exec",
         "messages.exec",
         "shortlinks.exec",
-        "share.exec",
+        "fileshare.exec",
         "ops.result",
     }
 
@@ -221,6 +221,21 @@ def test_tools_call_help_rejects_unknown_tool(monkeypatch, tmp_path: Path) -> No
     )
     assert isinstance(resp, dict)
     assert "unknown tool for help: bogus.exec" in resp["error"]["data"]["message"]
+
+
+def test_tools_call_old_share_exec_is_unknown(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 218,
+            "method": "tools/call",
+            "params": {"name": "share.exec", "arguments": {"action": "help", "args": {}}},
+        }
+    )
+    assert isinstance(resp, dict)
+    assert "unknown tool: share.exec" in resp["error"]["message"]
 
 
 def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:

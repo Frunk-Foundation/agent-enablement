@@ -47,7 +47,7 @@ Use when an agent needs direct, scriptable access to the MCP tool surface from t
 
 ## Outputs
 - JSON-only responses suitable for piping to `jq` and automation scripts.
-- Direct tool payloads from `help`, `credentials.*`, `taskboard.exec`, `messages.exec`, `share.exec`, `shortlinks.exec`, and `ops.result`.
+- Direct tool payloads from `help`, `credentials.*`, `taskboard.exec`, `messages.exec`, `fileshare.exec`, `shortlinks.exec`, and `ops.result`.
 
 ## Guardrails
 - Keep `--args-json` as a JSON object; invalid JSON returns CLI usage errors.
