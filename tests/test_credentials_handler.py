@@ -150,6 +150,11 @@ def test_success_response_contains_credentials_and_catalog(monkeypatch):
     assert refs.get("jmapMail", {}).get("tableName") == "AgentMail"
     assert refs.get("directory", {}).get("profileTableName") == "AgentProfiles"
     assert refs.get("files", {}).get("publicBaseUrl") == "https://d222222abcdef8.cloudfront.net/"
+    session = body.get("session")
+    assert isinstance(session, dict)
+    assert session.get("principalSub") == "21ebf510-90f1-7051-64e1-865ec0c362a8"
+    assert session.get("agentId") == "agent-user"
+    assert session.get("renewalMode") == "refresh-token-only"
     ct = body.get("cognitoTokens")
     assert isinstance(ct, dict)
     assert ct.get("idToken")
@@ -411,6 +416,7 @@ def test_refresh_route_uses_refresh_token_auth_and_preserves_refresh_token(monke
     assert ct.get("accessToken") == "at"
     assert ct.get("refreshToken") == "rt-in"
     assert "RefreshToken" not in ct
+    assert body["auth"]["renewalMode"] == "refresh-token-only"
 
 
 def test_refresh_route_missing_token_is_unauthorized(monkeypatch):
@@ -1005,6 +1011,16 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
 
         @staticmethod
         def get_item(**kwargs):
+            if kwargs["TableName"] == "DelegationRequests":
+                return {
+                    "Item": {
+                        "requestCode": {"S": "req-2"},
+                        "status": {"S": "approved"},
+                        "expiresAtEpoch": {"N": "9999999999"},
+                        "ephemeralAgentId": {"S": "ephem-t2"},
+                        "ephemeralUsername": {"S": "ephem-t2"},
+                    }
+                }
             assert kwargs["TableName"] == "AgentProfiles"
             return {
                 "Item": {
@@ -1060,3 +1076,119 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
     assert out["statusCode"] == 200
     assert body["ephemeralAgentId"] == "ephem-t1"
     assert body["ephemeralUsername"] == "ephem-t1"
+
+
+def test_delegation_redeem_retry_after_create_user_failure_is_recoverable(monkeypatch):
+    handler_module = _load_handler(monkeypatch)
+    updates: list[dict[str, object]] = []
+
+    class FakeDdb:
+        @staticmethod
+        def update_item(**kwargs):
+            updates.append(kwargs)
+            table = kwargs.get("TableName")
+            if table == "DelegationRequests":
+                values = kwargs.get("ExpressionAttributeValues") or {}
+                if ":redeeming" in values:
+                    return {
+                        "Attributes": {
+                            "status": {"S": "redeeming"},
+                            "ephemeralAgentId": {"S": "ephem-t2"},
+                            "ephemeralUsername": {"S": "ephem-t2"},
+                        }
+                    }
+                return {
+                    "Attributes": {
+                        "status": {"S": "redeemed"},
+                        "ephemeralAgentId": {"S": "ephem-t2"},
+                        "ephemeralUsername": {"S": "ephem-t2"},
+                    }
+                }
+            return {"Attributes": {}}
+
+        @staticmethod
+        def put_item(**kwargs):
+            del kwargs
+            return {}
+
+        @staticmethod
+        def get_item(**kwargs):
+            if kwargs["TableName"] == "DelegationRequests":
+                return {
+                    "Item": {
+                        "requestCode": {"S": "req-2"},
+                        "status": {"S": "approved"},
+                        "expiresAtEpoch": {"N": "9999999999"},
+                        "ephemeralAgentId": {"S": "ephem-t2"},
+                        "ephemeralUsername": {"S": "ephem-t2"},
+                    }
+                }
+            assert kwargs["TableName"] == "AgentProfiles"
+            return {
+                "Item": {
+                    "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                    "enabled": {"BOOL": True},
+                    "profileType": {"S": "ephemeral"},
+                    "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                    "s3Bucket": {"S": "test-bucket"},
+                    "agentId": {"S": "ephem-t2"},
+                    "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
+                }
+            }
+
+    class UsernameExistsException(Exception):
+        pass
+
+    class FakeCognito:
+        def __init__(self):
+            self.calls = 0
+
+        def admin_create_user(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise UsernameExistsException("exists")
+
+        def admin_set_user_password(self, **kwargs):
+            del kwargs
+
+        def initiate_auth(self, **kwargs):
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephem-t2"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c", "AccessToken": "at", "RefreshToken": "rt"}}
+
+    class FakeSts:
+        def assume_role(self, **kwargs):
+            del kwargs
+            return {
+                "Credentials": {
+                    "AccessKeyId": "ASIA123",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                    "Expiration": datetime(2026, 2, 10, tzinfo=timezone.utc),
+                }
+            }
+
+    fake_cognito = FakeCognito()
+    fake_cognito.UsernameExistsException = UsernameExistsException
+    handler_module._ddb_client = FakeDdb()
+    handler_module._cognito_client = fake_cognito
+    handler_module._sts_client = FakeSts()
+
+    event = {
+        "path": "/v1/delegation/redeem",
+        "body": json.dumps({"requestCode": "req-2"}),
+        "requestContext": {"requestId": "r1"},
+    }
+    out = handler_module.handler(event, None)
+    body = json.loads(out["body"])
+
+    assert out["statusCode"] == 200
+    assert body["ephemeralAgentId"] == "ephem-t2"
+    assert any(":redeeming" in (call.get("ExpressionAttributeValues") or {}) for call in updates)
+    assert any(":redeemed" in (call.get("ExpressionAttributeValues") or {}) for call in updates)

@@ -12,11 +12,19 @@ from enabler_cli.creds_main import app
 runner = CliRunner()
 
 
-def _seed_cache(path: Path) -> None:
+def _seed_cache(path: Path, *, agent_id: str = "agent-a", principal_sub: str = "sub-agent-a") -> None:
     exp = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     payload = {
         "expiresAt": exp,
         "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
+        "principal": {"sub": principal_sub, "username": agent_id},
+        "session": {
+            "sessionKey": principal_sub,
+            "principalSub": principal_sub,
+            "agentId": agent_id,
+            "authMode": "basic",
+            "renewalMode": "refresh-token-only",
+        },
         "credentialSets": {
             "agentEnablement": {
                 "credentials": {
@@ -43,11 +51,18 @@ def _seed_cache(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _session_cache(tmp_path: Path, monkeypatch, *, agent_id: str = "agent-a") -> Path:
+def _session_cache(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    agent_id: str = "agent-a",
+    principal_sub: str | None = None,
+) -> Path:
     monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
-    cache = tmp_path / "sessions" / agent_id / "session.json"
-    _seed_cache(cache)
+    resolved_sub = principal_sub or f"sub-{agent_id}"
+    cache = tmp_path / "sessions" / resolved_sub / "session.json"
+    _seed_cache(cache, agent_id=agent_id, principal_sub=resolved_sub)
     return cache
 
 
@@ -191,6 +206,7 @@ def test_delegation_redeem_writes_cache_and_reports_manifest(monkeypatch, tmp_pa
     assert parsed["kind"] == "enabler.creds.delegation.redeem.v1"
     assert parsed["credentialSets"] == ["agentEnablement"]
     assert Path(parsed["cachePath"]).exists()
+    assert parsed["cachePath"].endswith("/sessions/sub-1/session.json")
 
 
 def test_delegation_redeem_requires_api_key_env(monkeypatch, tmp_path: Path) -> None:
@@ -247,8 +263,8 @@ def test_delegation_request_rejects_non_credentials_endpoint(tmp_path: Path, mon
     monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
     monkeypatch.setenv("ENABLER_API_KEY", "key-1")
-    cache = tmp_path / "sessions" / "agent-a" / "session.json"
-    _seed_cache(cache)
+    cache = tmp_path / "sessions" / "sub-agent-a" / "session.json"
+    _seed_cache(cache, agent_id="agent-a", principal_sub="sub-agent-a")
     payload = json.loads(cache.read_text(encoding="utf-8"))
     payload["auth"]["credentialsEndpoint"] = "https://api.example.com/prod/v1/taskboard"
     cache.write_text(json.dumps(payload), encoding="utf-8")
@@ -285,7 +301,7 @@ def test_uses_cognito_username_as_default_agent_id(tmp_path: Path, monkeypatch) 
 
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
-    assert parsed["cachePath"].endswith("/sessions/leticiaoc/session.json")
+    assert parsed["cachePath"].endswith("/sessions/sub-leticiaoc/session.json")
 
 
 def test_session_list_and_revoke(tmp_path: Path, monkeypatch) -> None:
@@ -293,10 +309,14 @@ def test_session_list_and_revoke(tmp_path: Path, monkeypatch) -> None:
     result = runner.invoke(app, ["--agent-id", "agent-list", "session", "list"])
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
-    assert any(item["agentId"] == "agent-list" for item in parsed["sessions"])
+    assert any(
+        item["agentId"] == "agent-list" and item["principalSub"] == "sub-agent-list"
+        for item in parsed["sessions"]
+    )
 
     revoke = runner.invoke(app, ["--agent-id", "agent-list", "session", "revoke", "--agent-id", "agent-list"])
     assert revoke.exit_code == 0
     revoke_payload = json.loads(revoke.stdout)
     assert revoke_payload["removed"] is True
+    assert revoke_payload["principalSub"] == "sub-agent-list"
     assert not Path(revoke_payload["sessionPath"]).exists()

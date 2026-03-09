@@ -215,6 +215,104 @@ def _artifact_root(g: GlobalOpts) -> Path:
     return _credentials_cache_file(g).parent
 
 
+def _session_metadata_from_doc(doc: dict[str, Any]) -> dict[str, str]:
+    session = doc.get("session")
+    session = session if isinstance(session, dict) else {}
+    principal = doc.get("principal")
+    principal = principal if isinstance(principal, dict) else {}
+    refs = doc.get("references")
+    refs = refs if isinstance(refs, dict) else {}
+    eventbus = refs.get("eventbus")
+    eventbus = eventbus if isinstance(eventbus, dict) else {}
+
+    principal_sub = str(
+        session.get("principalSub")
+        or principal.get("sub")
+        or ""
+    ).strip()
+    agent_id = str(
+        session.get("agentId")
+        or eventbus.get("agentId")
+        or principal.get("username")
+        or ""
+    ).strip()
+    username = str(principal.get("username") or "").strip()
+    session_key = str(session.get("sessionKey") or principal_sub).strip()
+    auth_mode = str(session.get("authMode") or "").strip()
+    renewal_mode = str(
+        session.get("renewalMode")
+        or ((doc.get("auth") or {}).get("renewalMode") if isinstance(doc.get("auth"), dict) else "")
+        or ""
+    ).strip()
+    return {
+        "sessionKey": session_key,
+        "principalSub": principal_sub,
+        "agentId": agent_id,
+        "username": username,
+        "authMode": auth_mode,
+        "renewalMode": renewal_mode,
+    }
+
+
+def _session_cache_path_for_doc(*, g: GlobalOpts, root_doc: dict[str, Any]) -> Path:
+    explicit = str(g.creds_cache_path or "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    meta = _session_metadata_from_doc(root_doc)
+    principal_sub = str(meta.get("principalSub") or "").strip()
+    if principal_sub:
+        return (_default_session_root() / "sessions" / principal_sub / "session.json").resolve()
+    return _credentials_cache_file(g)
+
+
+def _artifact_root_for_doc(*, g: GlobalOpts, root_doc: dict[str, Any]) -> Path:
+    return _session_cache_path_for_doc(g=g, root_doc=root_doc).parent
+
+
+def _session_record_from_file(path: Path) -> dict[str, Any] | None:
+    try:
+        doc = _load_json_object(
+            raw=path.read_text(encoding="utf-8"),
+            label=f"cached credentials JSON at {path}",
+        )
+    except UsageError:
+        return None
+    meta = _session_metadata_from_doc(doc)
+    return {
+        "agentId": meta["agentId"],
+        "principalSub": meta["principalSub"],
+        "username": meta["username"],
+        "sessionKey": meta["sessionKey"],
+        "sessionPath": str(path.resolve()),
+        "exists": True,
+    }
+
+
+def _list_local_sessions() -> list[dict[str, Any]]:
+    sessions_root = (_default_session_root() / "sessions").resolve()
+    sessions: list[dict[str, Any]] = []
+    if not sessions_root.exists():
+        return sessions
+    for session_dir in sorted([p for p in sessions_root.iterdir() if p.is_dir()]):
+        session_file = session_dir / "session.json"
+        if not session_file.exists():
+            continue
+        record = _session_record_from_file(session_file)
+        if record is not None:
+            sessions.append(record)
+    return sessions
+
+
+def _find_session_cache_path_for_agent(agent_id: str) -> Path | None:
+    target = str(agent_id or "").strip()
+    if not target:
+        return None
+    for item in _list_local_sessions():
+        if str(item.get("agentId") or "").strip() == target:
+            return Path(str(item["sessionPath"])).resolve()
+    return None
+
+
 def _references_from_runtime_doc(args: argparse.Namespace, g: GlobalOpts) -> dict[str, Any]:
     root_doc = _resolve_runtime_credentials_doc(args, g)
     refs = root_doc.get("references")
@@ -304,7 +402,11 @@ def _credentials_doc_expired(doc: dict[str, Any], *, skew_seconds: int = 60) -> 
 
 
 def _write_credentials_cache_from_text(*, g: GlobalOpts, raw_text: str) -> Path:
-    path = _credentials_cache_file(g)
+    try:
+        doc = _load_json_object(raw=raw_text, label="credentials response")
+    except UsageError:
+        doc = {}
+    path = _session_cache_path_for_doc(g=g, root_doc=doc) if doc else _credentials_cache_file(g)
     _write_secure_text(path=path, text=raw_text.rstrip("\n") + "\n")
     return path
 
@@ -357,7 +459,7 @@ def _safe_env_suffix(name: str) -> str:
 
 
 def _write_sts_env_files_from_doc(*, g: GlobalOpts, root_doc: dict[str, Any]) -> dict[str, str]:
-    root = _artifact_root(g)
+    root = _artifact_root_for_doc(g=g, root_doc=root_doc)
     out: dict[str, str] = {}
 
     active_doc = _select_runtime_agent_doc(root_doc)
@@ -408,7 +510,7 @@ def _write_cognito_env_file_from_doc(*, g: GlobalOpts, root_doc: dict[str, Any])
     expires_in = str(tokens.get("expiresIn") or "").strip()
     if not id_token:
         raise UsageError("invalid credentials response: missing cognitoTokens.idToken")
-    out_path = (_artifact_root(g) / "cognito.env").resolve()
+    out_path = (_artifact_root_for_doc(g=g, root_doc=root_doc) / "cognito.env").resolve()
     lines = [
         f"ID_TOKEN={id_token}",
         f"ACCESS_TOKEN={access_token}",
@@ -496,14 +598,16 @@ def _credentials_location_manifest(
     sts_env_paths: dict[str, str],
     cognito_env_path: str,
 ) -> dict[str, Any]:
-    root = _artifact_root(g)
-    credentials_path = _credentials_cache_file(g)
+    root = _artifact_root_for_doc(g=g, root_doc=doc)
+    credentials_path = _session_cache_path_for_doc(g=g, root_doc=doc)
     default_sts_env_path = (root / "sts.env").resolve()
     expires_at = _credentials_expires_at(doc)
     freshness_status, seconds_to_expiry = _credentials_freshness(expires_at)
+    session = _session_metadata_from_doc(doc)
     return {
         "kind": "enabler.agent.credentials-locations.v1",
         "requestId": doc.get("requestId"),
+        "session": session,
         "expiresAt": expires_at,
         "freshness": {
             "status": freshness_status,
@@ -724,7 +828,6 @@ def _fetch_credentials_doc_text_for_cache(
     if not api_key:
         raise UsageError(f"missing api key (set {ENABLER_API_KEY})")
 
-    refresh_error = ""
     if isinstance(current_doc, dict) and _refresh_token_from_doc(current_doc):
         try:
             return _fetch_credentials_doc_text_for_cache_using_refresh_token(
@@ -732,17 +835,17 @@ def _fetch_credentials_doc_text_for_cache(
                 api_key=api_key,
             )
         except (UsageError, OpError) as e:
-            refresh_error = str(e)
+            raise OpError(f"refresh-token renewal failed: {e}") from e
 
-    try:
-        return _fetch_credentials_doc_text_for_cache_using_basic_auth(
-            endpoint=endpoint,
-            api_key=api_key,
+    if isinstance(current_doc, dict):
+        raise UsageError(
+            "cached credentials are not renewable via refresh token; rebootstrap required"
         )
-    except (UsageError, OpError) as basic_error:
-        if refresh_error:
-            raise OpError(f"refresh-token renewal failed: {refresh_error}; basic fallback failed: {basic_error}") from basic_error
-        raise
+
+    return _fetch_credentials_doc_text_for_cache_using_basic_auth(
+        endpoint=endpoint,
+        api_key=api_key,
+    )
 
 
 def _resolve_runtime_credentials_doc(args: argparse.Namespace, g: GlobalOpts) -> dict[str, Any]:
@@ -1031,6 +1134,9 @@ def _default_credentials_cache_path() -> str:
 
 def _default_credentials_cache_path_for_agent(agent_id: str) -> str:
     resolved_agent_id = str(agent_id or "").strip() or "default"
+    existing = _find_session_cache_path_for_agent(resolved_agent_id)
+    if existing is not None:
+        return str(existing)
     return str((_default_session_root() / "sessions" / resolved_agent_id / "session.json").resolve())
 
 
@@ -1387,11 +1493,7 @@ def _apply_global_env(args: argparse.Namespace) -> GlobalOpts:
         or _env_or_none(ENABLER_COGNITO_USERNAME)
         or ""
     ).strip()
-    creds_cache_path = (
-        getattr(args, "creds_cache", None)
-        or _env_or_none(ENABLER_CREDS_CACHE)
-        or _default_credentials_cache_path_for_agent(agent_id)
-    )
+    creds_cache_path = getattr(args, "creds_cache", None) or _env_or_none(ENABLER_CREDS_CACHE) or ""
     auto_refresh_creds = bool(
         getattr(args, "auto_refresh_creds", not _truthy(os.environ.get(ENABLER_NO_AUTO_REFRESH_CREDS)))
     )

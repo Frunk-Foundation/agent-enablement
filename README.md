@@ -81,13 +81,14 @@ Ephemeral delegation flow (request -> approve -> redeem):
 
 Runtime identity switching is supported without restart via MCP tool `credentials.exec`:
 - Startup `--agent-id` is optional; MCP may start unbound.
-- `credentials.exec` with `action=set_agentid` changes default context for subsequent calls.
+- `credentials.exec` with `action=set_agentid` changes default context for subsequent calls by selecting another locally cached principal session via its `agentId` alias.
 - Async operations are pinned to the `agentId` active at enqueue time.
 
 Credential lifecycle actions are exposed via MCP tool `credentials.exec`:
 - `action=ensure`: ensure credentials are present/fresh and return readiness metadata.
   - pass `args.forceRefresh=true` to force broker refresh immediately and rewrite local artifacts (`session.json`, `sts*.env`, `cognito.env`).
-- `action=list_sessions`: enumerate managed local agent sessions.
+  - automatic renewal is refresh-token-only; password auth is bootstrap-only.
+- `action=list_sessions`: enumerate managed local sessions, including `agentId` aliases and stable principal ids.
 - `action=set_agentid`: switch default runtime identity to another existing local session.
 - `action=delegation_request`: create short-code delegation request.
 - `action=delegation_approve`: approve request code (named profile only).
@@ -201,8 +202,9 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 
 - Runtime tools are keyed by active bound `agentId` once a session is bound.
 - Credentials are persisted in managed session storage (default):
-  - Linux: `~/.local/state/enabler/sessions/<agent-id>/session.json`
-  - macOS: `~/Library/Application Support/enabler/sessions/<agent-id>/session.json`
+  - Linux: `~/.local/state/enabler/sessions/<principal-sub>/session.json`
+  - macOS: `~/Library/Application Support/enabler/sessions/<principal-sub>/session.json`
+- `agentId` remains the user-facing alias for switching and session listing; the on-disk cache owner is the stable Cognito subject.
 - Artifacts are adjacent to session state:
   - `sts.env`, `sts-<set>.env`, `cognito.env`
 

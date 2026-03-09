@@ -998,7 +998,7 @@ def test_resolve_runtime_credentials_doc_prefers_refresh_token_flow(monkeypatch,
     assert "authorization" not in headers
 
 
-def test_resolve_runtime_credentials_doc_falls_back_to_basic_when_refresh_fails(monkeypatch, tmp_path):
+def test_resolve_runtime_credentials_doc_does_not_fall_back_to_basic_when_refresh_fails(monkeypatch, tmp_path):
     cache_path = tmp_path / "credentials.json"
     cache_path.write_text(
         json.dumps(
@@ -1030,21 +1030,20 @@ def test_resolve_runtime_credentials_doc_falls_back_to_basic_when_refresh_fails(
         return 200, {}, json.dumps(payload).encode("utf-8")
 
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
-    monkeypatch.setenv("ENABLER_COGNITO_USERNAME", "agent-test")
-    monkeypatch.setenv("ENABLER_COGNITO_PASSWORD", "pw")
     monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", fake_http_post_json)
 
-    doc = _resolve_runtime_credentials_doc(
-        argparse.Namespace(),
-        _g(cache_path=str(cache_path), auto_refresh_creds=True),
-    )
-    assert doc["cognitoTokens"]["refreshToken"] == "rt-fresh"
-    assert len(calls) == 2
-    assert calls[0]["url"] == "https://api.example.com/v1/credentials/refresh"
-    assert calls[1]["url"] == "https://api.example.com/v1/credentials"
-    headers = calls[1]["headers"]
-    assert isinstance(headers, dict)
-    assert str(headers.get("authorization", "")).startswith("Basic ")
+    with pytest.raises(OpError, match="refresh-token renewal failed"):
+        _resolve_runtime_credentials_doc(
+            argparse.Namespace(),
+            _g(cache_path=str(cache_path), auto_refresh_creds=True),
+        )
+
+    assert len(calls) == 3
+    assert all(call["url"] == "https://api.example.com/v1/credentials/refresh" for call in calls)
+    for call in calls:
+        headers = call["headers"]
+        assert isinstance(headers, dict)
+        assert "authorization" not in headers
 
 
 def test_taskboard_endpoint_uses_runtime_refs(monkeypatch, tmp_path):

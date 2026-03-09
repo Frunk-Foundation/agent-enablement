@@ -370,6 +370,7 @@ def _delegation_item_to_payload(item: dict[str, Any], *, request_id: str) -> dic
         "expiresAt": _ddb_str(item, "expiresAt"),
         "ephemeralAgentId": _ddb_str(item, "ephemeralAgentId"),
         "ephemeralUsername": _ddb_str(item, "ephemeralUsername"),
+        "redeemState": _ddb_str(item, "status"),
     }
 
 
@@ -831,33 +832,55 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 }
                 wide_event["outcome"] = "unauthorized"
                 return _response(status_code, body)
-            try:
-                out = _ddb().update_item(
-                    TableName=_delegation_table(),
-                    Key={"requestCode": {"S": request_code}},
-                    ConditionExpression="#st = :approved AND expiresAtEpoch > :now_epoch",
-                    UpdateExpression="SET #st = :redeemed, redeemedAt = :redeemed_at",
-                    ExpressionAttributeNames={"#st": "status"},
-                    ExpressionAttributeValues={
-                        ":approved": {"S": "approved"},
-                        ":redeemed": {"S": "redeemed"},
-                        ":redeemed_at": {"S": _now_iso()},
-                        ":now_epoch": {"N": str(_delegation_now_epoch())},
-                    },
-                    ReturnValues="ALL_NEW",
-                )
-            except Exception as e:
-                if type(e).__name__ == "ConditionalCheckFailedException":
-                    status_code = 401
-                    body = {
-                        "errorCode": "UNAUTHORIZED",
-                        "message": "Delegation request is not redeemable",
-                        "requestId": request_id,
-                    }
-                    wide_event["outcome"] = "unauthorized"
-                    return _response(status_code, body)
-                raise
-            claims = out.get("Attributes") or {}
+            existing = _delegation_get(request_code)
+            if not existing or _delegation_expired(existing):
+                status_code = 401
+                body = {
+                    "errorCode": "UNAUTHORIZED",
+                    "message": "Delegation request is not redeemable",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "unauthorized"
+                return _response(status_code, body)
+            existing_status = _delegation_status(existing)
+            if existing_status not in {"approved", "redeeming", "redeemed"}:
+                status_code = 401
+                body = {
+                    "errorCode": "UNAUTHORIZED",
+                    "message": "Delegation request is not redeemable",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "unauthorized"
+                return _response(status_code, body)
+            claims = existing
+            if existing_status == "approved":
+                try:
+                    out = _ddb().update_item(
+                        TableName=_delegation_table(),
+                        Key={"requestCode": {"S": request_code}},
+                        ConditionExpression="#st = :approved AND expiresAtEpoch > :now_epoch",
+                        UpdateExpression="SET #st = :redeeming, redeemStartedAt = if_not_exists(redeemStartedAt, :redeem_started_at)",
+                        ExpressionAttributeNames={"#st": "status"},
+                        ExpressionAttributeValues={
+                            ":approved": {"S": "approved"},
+                            ":redeeming": {"S": "redeeming"},
+                            ":redeem_started_at": {"S": _now_iso()},
+                            ":now_epoch": {"N": str(_delegation_now_epoch())},
+                        },
+                        ReturnValues="ALL_NEW",
+                    )
+                    claims = out.get("Attributes") or existing
+                except Exception as e:
+                    if type(e).__name__ == "ConditionalCheckFailedException":
+                        status_code = 401
+                        body = {
+                            "errorCode": "UNAUTHORIZED",
+                            "message": "Delegation request is not redeemable",
+                            "requestId": request_id,
+                        }
+                        wide_event["outcome"] = "unauthorized"
+                        return _response(status_code, body)
+                    raise
             ephemeral_username = _ddb_str(claims, "ephemeralUsername", default="").strip()
             ephemeral_agent_id = _ddb_str(claims, "ephemeralAgentId", default="").strip()
             if not ephemeral_username or not ephemeral_agent_id:
@@ -879,16 +902,8 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                     MessageAction="SUPPRESS",
                 )
             except Exception as e:
-                if type(e).__name__ == "UsernameExistsException":
-                    status_code = 401
-                    body = {
-                        "errorCode": "UNAUTHORIZED",
-                        "message": "Delegation request already used",
-                        "requestId": request_id,
-                    }
-                    wide_event["outcome"] = "unauthorized"
-                    return _response(status_code, body)
-                raise
+                if type(e).__name__ != "UsernameExistsException":
+                    raise
             _cognito().admin_set_user_password(
                 UserPoolId=USER_POOL_ID,
                 Username=ephemeral_username,
@@ -899,6 +914,16 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 ClientId=USER_POOL_CLIENT_ID,
                 AuthFlow="USER_PASSWORD_AUTH",
                 AuthParameters={"USERNAME": ephemeral_username, "PASSWORD": generated_password},
+            )
+            _ddb().update_item(
+                TableName=_delegation_table(),
+                Key={"requestCode": {"S": request_code}},
+                UpdateExpression="SET #st = :redeemed, redeemedAt = :redeemed_at",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={
+                    ":redeemed": {"S": "redeemed"},
+                    ":redeemed_at": {"S": _now_iso()},
+                },
             )
             auth_mode = "delegation-redeem"
             auth_result = resp.get("AuthenticationResult") or {}
@@ -1514,7 +1539,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             if issuer
             else "",
             "jwksUrl": _join_url(issuer, ".well-known/jwks.json") if issuer else "",
-            "reauth": {"mode": "refresh-token-first-fallback-basic"},
+            "reauth": {"mode": "refresh-token-only"},
         }
         references = {
             "awsRegion": (_aws_region() or ""),
@@ -1620,11 +1645,19 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             "auth": {
                 "credentialsEndpoint": credentials_invoke_url,
                 "cognitoClientId": USER_POOL_CLIENT_ID,
+                "renewalMode": "refresh-token-only",
                 "renewalPolicy": {
                     "refreshBeforeSeconds": 60,
                     "maxRenewAttempts": 3,
                     "backoffSeconds": [1, 2, 4],
                 },
+            },
+            "session": {
+                "sessionKey": sub,
+                "principalSub": sub,
+                "agentId": agent_id,
+                "authMode": auth_mode,
+                "renewalMode": "refresh-token-only",
             },
             "runtime": {
                 "serviceEndpoints": {

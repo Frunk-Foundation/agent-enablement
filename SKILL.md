@@ -59,12 +59,14 @@ just test
 ## Wish I Knew Earlier
 
 - MCP stdio framing here must be newline-delimited JSON-RPC. `Content-Length` framing causes Codex MCP startup timeout symptoms even when the server process is fast.
-- Delegation uses short-code request/approve/redeem. Any named profile can approve a pending code; redeem is one-time and writes the target session cache/artifacts.
+- Delegation uses short-code request/approve/redeem. Redeem is now retry-safe: the request moves through a `redeeming` state and only finalizes after ephemeral Cognito auth and profile upsert succeed.
 - Agent-id session mode must derive credential paths from resolved `GlobalOpts.agent_id` (not only env). Otherwise helper flows that construct `GlobalOpts` directly will silently read/write the wrong session.
+- Managed session storage is keyed by stable `principal.sub`, not by mutable `agentId`. Session listing and `set_agentid` still use `agentId` as the human-facing alias.
 - Codex MCP can start unbound (no `--agent-id`). In unbound mode, bootstrap via `credentials.exec` delegation request/approve/redeem, then runtime tools become available.
 - MCP runtime switching (`credentials.exec` + `action=set_agentid`) changes only the default context for future calls; async jobs must pin enqueue-time `agentId` to avoid identity drift.
 - MCP has a built-in discovery path now: call top-level `help` or any `*.exec` with `action=help`; in unbound mode, help still works so bootstrap guidance is always available.
 - After credentials schema changes deploy, run `credentials.exec` with `action=ensure` and `args.forceRefresh=true` to pull new fields immediately instead of waiting for expiry-driven refresh.
+- Runtime credential renewal is refresh-token-only. Username/password remain bootstrap inputs; auto-refresh no longer falls back to ambient basic auth.
 - Runtime SSM access is available via `ssm.exec` (`paths|list|get`); returned values are plaintext secret material and must not be echoed into logs or transcripts.
 - Agent mail now goes through `jmap-mail.exec`; the old EventBridge/SQS inbox flow is rebranded as `eventbus.exec` and is not the mail interface.
 - JMAP mail attachments are fileshare-backed in v1: `emailsubmission_set` can reference pre-uploaded attachment objects or upload `attachmentFilePaths` directly and persist the resulting attachment metadata on the mail item.

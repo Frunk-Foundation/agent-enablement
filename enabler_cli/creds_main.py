@@ -23,7 +23,9 @@ from .runtime_core import (
     _credentials_expires_at,
     _credentials_freshness,
     _credentials_location_manifest,
+    _find_session_cache_path_for_agent,
     _fetch_credentials_doc_text_for_cache,
+    _list_local_sessions,
     _load_json_object,
     _namespace,
     _print_credentials_location_manifest_human,
@@ -232,9 +234,12 @@ def status(ctx: typer.Context) -> None:
     doc = _ensure_doc(g)
     expires_at = _credentials_expires_at(doc)
     freshness, seconds_to_expiry = _credentials_freshness(expires_at)
+    session = doc.get("session") if isinstance(doc.get("session"), dict) else {}
     sets = doc.get("credentialSets") if isinstance(doc.get("credentialSets"), dict) else {}
     payload = {
         "kind": "enabler.creds.status.v1",
+        "agentId": str(session.get("agentId") or g.agent_id or "").strip(),
+        "principalSub": str(session.get("principalSub") or ((doc.get("principal") or {}).get("sub") if isinstance(doc.get("principal"), dict) else "") or "").strip(),
         "expiresAt": expires_at,
         "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
         "credentialSets": sorted(list(sets.keys())),
@@ -246,7 +251,7 @@ def status(ctx: typer.Context) -> None:
 @app.command("paths", help="Print deterministic artifact paths.")
 def paths(ctx: typer.Context) -> None:
     g = _ctx_global(ctx)
-    root = _artifact_root(g)
+    root = path.parent
     payload = {
         "kind": "enabler.creds.paths.v1",
         "agentId": g.agent_id,
@@ -442,6 +447,7 @@ def session_status(
     payload = {
         "kind": "enabler.session.status.v1",
         "agentId": agent_id,
+        "principalSub": str((doc.get("session") or {}).get("principalSub") if isinstance(doc.get("session"), dict) else ""),
         "cachePath": str(_credentials_cache_file(g)),
         "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
         "expiresAt": expires_at,
@@ -452,21 +458,7 @@ def session_status(
 @session_app.command("list", help="List locally managed sessions.")
 def session_list(ctx: typer.Context) -> None:
     g = _ctx_global(ctx)
-    root = _artifact_root(g)
-    sessions_root = root.parent
-    sessions: list[dict[str, object]] = []
-    if sessions_root.exists():
-        for session_dir in sorted([p for p in sessions_root.iterdir() if p.is_dir()]):
-            session_file = session_dir / "session.json"
-            if not session_file.exists():
-                continue
-            sessions.append(
-                {
-                    "agentId": session_dir.name,
-                    "sessionPath": str(session_file.resolve()),
-                    "exists": True,
-                }
-            )
+    sessions = _list_local_sessions()
     _print_json({"kind": "enabler.session.list.v1", "sessions": sessions}, pretty=g.pretty)
 
 
@@ -485,7 +477,21 @@ def session_revoke(
     )
     path = _credentials_cache_file(g)
     removed = False
+    principal_sub = ""
+    existing = _find_session_cache_path_for_agent(agent_id)
+    if existing is not None:
+        path = existing
     if path.exists():
+        try:
+            doc = _load_json_object(
+                raw=path.read_text(encoding="utf-8"),
+                label=f"cached credentials JSON at {path}",
+            )
+            session = doc.get("session")
+            if isinstance(session, dict):
+                principal_sub = str(session.get("principalSub") or "").strip()
+        except UsageError:
+            pass
         path.unlink()
         removed = True
     root = _artifact_root(g)
@@ -495,6 +501,7 @@ def session_revoke(
         {
             "kind": "enabler.session.revoke.v1",
             "agentId": agent_id,
+            "principalSub": principal_sub,
             "sessionPath": str(path),
             "removed": removed,
         },

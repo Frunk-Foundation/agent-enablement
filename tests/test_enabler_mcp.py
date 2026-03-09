@@ -11,12 +11,19 @@ from pathlib import Path
 from enabler_cli.mcp_server import EnablerMcp
 
 
-def _seed_cache(path: Path) -> None:
+def _seed_cache(path: Path, *, agent_id: str = "agent-a", principal_sub: str = "sub-agent-a") -> None:
     exp = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     payload = {
         "expiresAt": exp,
         "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
-        "principal": {"sub": "sub-1", "username": "agent-a", "profileType": "named"},
+        "principal": {"sub": principal_sub, "username": agent_id, "profileType": "named"},
+        "session": {
+            "sessionKey": principal_sub,
+            "principalSub": principal_sub,
+            "agentId": agent_id,
+            "authMode": "basic",
+            "renewalMode": "refresh-token-only",
+        },
         "references": {
             "awsRegion": "us-east-2",
             "ssmKeys": {
@@ -53,11 +60,18 @@ def _seed_cache(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _session_cache(tmp_path: Path, monkeypatch, *, agent_id: str = "agent-a") -> Path:
+def _session_cache(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    agent_id: str = "agent-a",
+    principal_sub: str | None = None,
+) -> Path:
     monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
-    cache = tmp_path / "sessions" / agent_id / "session.json"
-    _seed_cache(cache)
+    resolved_sub = principal_sub or f"sub-{agent_id}"
+    cache = tmp_path / "sessions" / resolved_sub / "session.json"
+    _seed_cache(cache, agent_id=agent_id, principal_sub=resolved_sub)
     return cache
 
 
@@ -363,9 +377,9 @@ def test_ssm_exec_paths(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(resp, dict)
     parsed = json.loads(resp["result"]["content"][0]["text"])
     assert parsed["kind"] == "enabler.ssm.paths.v1"
-    assert parsed["agentSub"] == "sub-1"
+    assert parsed["agentSub"] == "sub-agent-a"
     assert parsed["sharedBasePath"] == "/agent-enablement/prod/shared/"
-    assert parsed["agentBasePath"] == "/agent-enablement/prod/agent/sub-1/"
+    assert parsed["agentBasePath"] == "/agent-enablement/prod/agent/sub-agent-a/"
 
 
 def test_ssm_exec_list_and_get(monkeypatch, tmp_path: Path) -> None:
@@ -373,17 +387,17 @@ def test_ssm_exec_list_and_get(monkeypatch, tmp_path: Path) -> None:
 
     class _FakeSsm:
         def get_parameters_by_path(self, **kwargs):
-            assert kwargs["Path"] == "/agent-enablement/prod/agent/sub-1/"
+            assert kwargs["Path"] == "/agent-enablement/prod/agent/sub-agent-a/"
             return {
                 "Parameters": [
-                    {"Name": "/agent-enablement/prod/agent/sub-1/key-a"},
-                    {"Name": "/agent-enablement/prod/agent/sub-1/key-b"},
+                    {"Name": "/agent-enablement/prod/agent/sub-agent-a/key-a"},
+                    {"Name": "/agent-enablement/prod/agent/sub-agent-a/key-b"},
                 ],
                 "NextToken": "",
             }
 
         def get_parameter(self, **kwargs):
-            assert kwargs["Name"] == "/agent-enablement/prod/agent/sub-1/key-a"
+            assert kwargs["Name"] == "/agent-enablement/prod/agent/sub-agent-a/key-a"
             return {
                 "Parameter": {
                     "Name": kwargs["Name"],
@@ -415,7 +429,7 @@ def test_ssm_exec_list_and_get(monkeypatch, tmp_path: Path) -> None:
     list_parsed = json.loads(list_resp["result"]["content"][0]["text"])
     assert list_parsed["kind"] == "enabler.ssm.list.v1"
     assert list_parsed["count"] == 2
-    assert "/agent-enablement/prod/agent/sub-1/key-a" in list_parsed["names"]
+    assert "/agent-enablement/prod/agent/sub-agent-a/key-a" in list_parsed["names"]
 
     get_resp = mcp.handle_request(
         {
@@ -424,7 +438,7 @@ def test_ssm_exec_list_and_get(monkeypatch, tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "ssm.exec",
-                "arguments": {"action": "get", "args": {"name": "/agent-enablement/prod/agent/sub-1/key-a"}},
+                "arguments": {"action": "get", "args": {"name": "/agent-enablement/prod/agent/sub-agent-a/key-a"}},
             },
         }
     )
@@ -520,8 +534,8 @@ def test_credentials_exec_ensure_force_refresh_rewrites_artifacts(monkeypatch, t
     parsed = json.loads(resp["result"]["content"][0]["text"])
     assert parsed["kind"] == "enabler.creds.ensure.v1"
     assert parsed["refreshed"] is True
-    assert parsed["cachePath"].endswith("/sessions/agent-a/session.json")
-    assert parsed["manifest"]["paths"]["stsDefaultEnv"].endswith("/sessions/agent-a/sts.env")
+    assert parsed["cachePath"].endswith("/sessions/sub-1/session.json")
+    assert parsed["manifest"]["paths"]["stsDefaultEnv"].endswith("/sessions/sub-1/sts.env")
     assert len(refresh_calls) == 1
 
 
@@ -1039,6 +1053,8 @@ def test_credentials_exec_list_sessions(monkeypatch, tmp_path: Path) -> None:
     parsed = json.loads(resp["result"]["content"][0]["text"])
     ids = {item["agentId"] for item in parsed["sessions"]}
     assert {"agent-a", "agent-b"}.issubset(ids)
+    principal_subs = {item["principalSub"] for item in parsed["sessions"]}
+    assert {"sub-agent-a", "sub-agent-b"}.issubset(principal_subs)
 
 
 def test_credentials_exec_delegation_flow(monkeypatch, tmp_path: Path) -> None:

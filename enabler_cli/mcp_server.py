@@ -27,6 +27,7 @@ from .runtime_core import (
     _credentials_freshness,
     _credentials_location_manifest,
     _fetch_credentials_doc_text_for_cache,
+    _list_local_sessions,
     _load_json_object,
     _namespace,
     _resolve_runtime_credentials_doc,
@@ -576,9 +577,9 @@ class EnablerMcp:
                 "brief": "Credential lifecycle actions (bootstrap, switching, delegation).",
                 "actions": {
                     "help": "Describe credential actions and examples.",
-                    "ensure": "Validate required credential set/token availability; set args.forceRefresh=true to force broker refresh and rewrite artifacts.",
+                    "ensure": "Validate required credential set/token availability; set args.forceRefresh=true to force broker refresh and rewrite artifacts. Auto-renewal is refresh-token-only.",
                     "set_agentid": "Switch default runtime identity to another local session.",
-                    "list_sessions": "List local session ids available for switching.",
+                    "list_sessions": "List local sessions available for switching, including agentId aliases and principal ids.",
                     "delegation_request": "Create request code for named-agent approval.",
                     "delegation_approve": "Approve delegation request (named profiles only).",
                     "delegation_status": "Get delegation request status by requestCode.",
@@ -879,6 +880,7 @@ class EnablerMcp:
             "kind": "enabler.creds.status.v1",
             "defaultAgentId": agent_id,
             "agentId": agent_id,
+            "principalSub": str((doc.get("session") or {}).get("principalSub") if isinstance(doc.get("session"), dict) else ""),
             "profileType": str((doc.get("principal") or {}).get("profileType") or ""),
             "expiresAt": expires_at,
             "freshness": {"status": freshness, "secondsToExpiry": seconds_to_expiry},
@@ -960,21 +962,7 @@ class EnablerMcp:
 
         if action == "list_sessions":
             self._require_bound_agent_id()
-            root = _artifact_root(g)
-            sessions_root = root.parent
-            sessions: list[dict[str, Any]] = []
-            if sessions_root.exists():
-                for session_dir in sorted([p for p in sessions_root.iterdir() if p.is_dir()]):
-                    session_file = session_dir / "session.json"
-                    if not session_file.exists():
-                        continue
-                    sessions.append(
-                        {
-                            "agentId": session_dir.name,
-                            "sessionPath": str(session_file.resolve()),
-                            "exists": True,
-                        }
-                    )
+            sessions = _list_local_sessions()
             return {"kind": "enabler.mcp.credentials.sessions.v1", "sessions": sessions}
 
         if action == "delegation_request":
