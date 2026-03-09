@@ -77,6 +77,7 @@ def test_outputs_include_split_role_and_boundary_arns(monkeypatch):
     assert "TaskboardTasksTableName" in outputs
     assert "TaskboardAuditTableName" in outputs
     assert "FilesPublicBaseUrl" in outputs
+    assert "EphemeralUserPoolClientId" in outputs
 
 
 def test_credentials_handler_uses_explicit_scope_role_env_vars(monkeypatch):
@@ -103,6 +104,8 @@ def test_credentials_handler_uses_explicit_scope_role_env_vars(monkeypatch):
     assert "CONTACTS_TABLE_NAME" in env_vars
     assert "MAIL_TABLE_NAME" in env_vars
     assert "USER_POOL_ID" in env_vars
+    assert "USER_POOL_CLIENT_ID" in env_vars
+    assert "EPHEMERAL_USER_POOL_CLIENT_ID" in env_vars
     assert "ASSUME_ROLE_ARN" not in env_vars
 
 
@@ -111,6 +114,15 @@ def test_user_pool_client_refresh_token_validity_is_365_days(monkeypatch):
     client = _find_resource(template, "AWS::Cognito::UserPoolClient", "AgentUserPoolClient")
     props = client.get("Properties") or {}
     assert props.get("RefreshTokenValidity") == 525600
+    units = props.get("TokenValidityUnits") or {}
+    assert units.get("RefreshToken") == "minutes"
+
+
+def test_ephemeral_user_pool_client_refresh_token_validity_is_7_days(monkeypatch):
+    template = _synth_template(monkeypatch)
+    client = _find_resource(template, "AWS::Cognito::UserPoolClient", "EphemeralAgentUserPoolClient")
+    props = client.get("Properties") or {}
+    assert props.get("RefreshTokenValidity") == 10080
     units = props.get("TokenValidityUnits") or {}
     assert units.get("RefreshToken") == "minutes"
 

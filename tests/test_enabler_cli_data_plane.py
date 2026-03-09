@@ -958,11 +958,14 @@ def test_resolve_runtime_credentials_doc_prefers_refresh_token_flow(monkeypatch,
     cache_path = tmp_path / "credentials.json"
     cache_path.write_text(
         json.dumps(
-            {
-                "expiresAt": "2000-01-01T00:00:00Z",
-                "auth": {"credentialsEndpoint": "https://api.example.com/v1/credentials"},
-                "cognitoTokens": {"refreshToken": "rt-old"},
-                "credentials": {
+                {
+                    "expiresAt": "2000-01-01T00:00:00Z",
+                    "auth": {
+                        "credentialsEndpoint": "https://api.example.com/v1/credentials",
+                        "cognitoClientId": "client-1",
+                    },
+                    "cognitoTokens": {"refreshToken": "rt-old"},
+                    "credentials": {
                     "accessKeyId": "AKIA_OLD",
                     "secretAccessKey": "old-secret",
                     "sessionToken": "old-token",
@@ -995,6 +998,7 @@ def test_resolve_runtime_credentials_doc_prefers_refresh_token_flow(monkeypatch,
     headers = calls[0]["headers"]
     assert isinstance(headers, dict)
     assert headers["x-enabler-refresh-token"] == "rt-old"
+    assert headers["x-enabler-cognito-client-id"] == "client-1"
     assert "authorization" not in headers
 
 

@@ -67,6 +67,7 @@ just test
 - MCP has a built-in discovery path now: call top-level `help` or any `*.exec` with `action=help`; in unbound mode, help still works so bootstrap guidance is always available.
 - After credentials schema changes deploy, run `credentials.exec` with `action=ensure` and `args.forceRefresh=true` to pull new fields immediately instead of waiting for expiry-driven refresh.
 - Runtime credential renewal is refresh-token-only. Username/password are for bootstrap issuance only; admin-issued seeded bundles and delegation redeem should converge on the same session artifact.
+- Cognito refresh lifetime now follows `profileType` via separate app clients in one pool: named uses the long-lived client, ephemeral uses the 7-day client. If refresh behavior looks wrong, inspect the cached `auth.cognitoClientId` first.
 - `trunk check` is not usable until the repo has been initialized with `trunk init`; otherwise it exits immediately with that setup error instead of linting changed files.
 - Runtime SSM access is available via `ssm.exec` (`paths|list|get`); returned values are plaintext secret material and must not be echoed into logs or transcripts.
 - Agent mail now goes through `jmap-mail.exec`; the old EventBridge/SQS inbox flow is rebranded as `eventbus.exec` and is not the mail interface.

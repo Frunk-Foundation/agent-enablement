@@ -681,6 +681,22 @@ def _refresh_token_from_doc(doc: dict[str, Any]) -> str:
     return ""
 
 
+def _cognito_client_id_from_doc(doc: dict[str, Any]) -> str:
+    auth = doc.get("auth")
+    if isinstance(auth, dict):
+        raw = str(auth.get("cognitoClientId") or "").strip()
+        if raw:
+            return raw
+    refs = doc.get("references")
+    if isinstance(refs, dict):
+        cognito = refs.get("cognito")
+        if isinstance(cognito, dict):
+            raw = str(cognito.get("userPoolClientId") or "").strip()
+            if raw:
+                return raw
+    return ""
+
+
 def _renewal_policy(doc: dict[str, Any] | None) -> tuple[int, int, list[int]]:
     refresh_before_seconds = 60
     max_renew_attempts = 3
@@ -787,6 +803,11 @@ def _fetch_credentials_doc_text_for_cache_using_refresh_token(
         headers={
             "x-api-key": api_key,
             "x-enabler-refresh-token": refresh_token,
+            **(
+                {"x-enabler-cognito-client-id": _cognito_client_id_from_doc(current_doc)}
+                if _cognito_client_id_from_doc(current_doc)
+                else {}
+            ),
         },
         error_prefix="credentials refresh request failed",
     )
@@ -3971,10 +3992,14 @@ def _request_seeded_session_bundle(
     g: GlobalOpts,
     username: str,
     password: str,
+    profile_type: str,
     endpoint: str | None,
     api_key: str | None,
     api_key_ssm_name: str | None,
 ) -> dict[str, Any]:
+    resolved_profile_type = str(profile_type or "named").strip().lower()
+    if resolved_profile_type not in {"named", "ephemeral"}:
+        raise UsageError("profile type must be named or ephemeral")
     request_endpoint = _admin_credentials_endpoint(g=g, endpoint=endpoint)
     request_api_key = _admin_api_key(g=g, api_key=api_key, api_key_ssm_name=api_key_ssm_name)
     status, _hdrs, data = _http_post_json(
@@ -3982,6 +4007,7 @@ def _request_seeded_session_bundle(
         headers={
             "authorization": _basic_auth_header(username, password),
             "x-api-key": request_api_key,
+            "x-enabler-profile-type": resolved_profile_type,
         },
         body=b"",
     )
@@ -4041,6 +4067,7 @@ def agent_bootstrap_issue(
     ctx: typer.Context,
     username: str = typer.Option(..., "--username", help="Bootstrap username"),
     password: str = typer.Option(..., "--password", help="Bootstrap password"),
+    profile_type: str = typer.Option("named", "--profile-type", help="Profile type: named or ephemeral (default named)"),
     endpoint: str | None = typer.Option(
         None,
         "--endpoint",
@@ -4067,6 +4094,7 @@ def agent_bootstrap_issue(
         g=g,
         username=username,
         password=password,
+        profile_type=profile_type,
         endpoint=endpoint,
         api_key=api_key,
         api_key_ssm_name=api_key_ssm_name,
@@ -4081,6 +4109,7 @@ def agent_bootstrap_place(
     ctx: typer.Context,
     username: str = typer.Option(..., "--username", help="Bootstrap username"),
     password: str = typer.Option(..., "--password", help="Bootstrap password"),
+    profile_type: str = typer.Option("named", "--profile-type", help="Profile type: named or ephemeral (default named)"),
     endpoint: str | None = typer.Option(
         None,
         "--endpoint",
@@ -4112,6 +4141,7 @@ def agent_bootstrap_place(
         g=g,
         username=username,
         password=password,
+        profile_type=profile_type,
         endpoint=endpoint,
         api_key=api_key,
         api_key_ssm_name=api_key_ssm_name,

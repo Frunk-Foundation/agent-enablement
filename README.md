@@ -47,6 +47,7 @@ export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
 ```
 
 `ENABLER_COGNITO_USERNAME` / `ENABLER_COGNITO_PASSWORD` are bootstrap-only. Normal runtime renewal uses the cached refresh token.
+Named profiles use a `365 day` Cognito refresh window. Ephemeral profiles use a `7 day` refresh window.
 
 3. For AWS CLI/SDK, use `credential_process`:
 
@@ -255,11 +256,11 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 ./enabler-admin agent onboard <username> <password> --profile-type named
 ./enabler-admin agent seed-profile --username <u> --password <p> --profile-type ephemeral
 ./enabler-admin agent decommission <username>
-./enabler-admin agent bootstrap issue --username <u> --password <p> --out bundle.json
-./enabler-admin agent bootstrap place --username <u> --password <p> --session-root ~/.local/state/enabler
+./enabler-admin agent bootstrap issue --username <u> --password <p> --profile-type named --out bundle.json
+./enabler-admin agent bootstrap place --username <u> --password <p> --profile-type ephemeral --session-root ~/.local/state/enabler
 ```
 
-Ephemeral profiles (`profileType=ephemeral`) are hard-blocked from `agentAWSWorkshop*` credential sets.
+Ephemeral profiles (`profileType=ephemeral`) are hard-blocked from `agentAWSWorkshop*` credential sets and use the short-lived Cognito app client.
 
 ## Skills Layout
 

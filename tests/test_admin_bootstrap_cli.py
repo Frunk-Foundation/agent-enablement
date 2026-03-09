@@ -48,8 +48,8 @@ def _bundle_payload() -> dict[str, object]:
     return {
         "kind": "agent-enablement.credentials.v2",
         "expiresAt": exp,
-        "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
-        "principal": {"sub": "sub-bootstrap-1", "username": "agent-bootstrap"},
+        "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials", "cognitoClientId": "client-1"},
+        "principal": {"sub": "sub-bootstrap-1", "username": "agent-bootstrap", "profileType": "named"},
         "session": {
             "sessionKey": "sub-bootstrap-1",
             "principalSub": "sub-bootstrap-1",
@@ -137,3 +137,40 @@ def test_admin_bootstrap_place_writes_managed_artifacts(monkeypatch, tmp_path: P
     assert parsed["cachePath"].endswith("/sessions/sub-bootstrap-1/session.json")
     assert Path(parsed["cachePath"]).exists()
     assert parsed["manifest"]["exists"]["cognitoEnv"] is True
+
+
+def test_admin_bootstrap_issue_ephemeral_passes_profile_type_header(monkeypatch) -> None:
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli.build_admin_context", lambda _g: _FakeAdminContext())
+    called: dict[str, object] = {}
+
+    def _fake_post_json(*, url: str, headers: dict[str, str], body: bytes = b"", timeout_seconds: int = 30):
+        del url, body, timeout_seconds
+        called["headers"] = headers
+        payload = _bundle_payload()
+        payload["auth"]["cognitoClientId"] = "client-ephemeral"
+        payload["principal"]["profileType"] = "ephemeral"
+        return (200, {}, json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr("enabler_cli.apps.agent_admin_cli._http_post_json", _fake_post_json)
+
+    result = runner.invoke(
+        admin_app,
+        [
+            "agent",
+            "bootstrap",
+            "issue",
+            "--username",
+            "agent-bootstrap",
+            "--password",
+            "pw-1",
+            "--profile-type",
+            "ephemeral",
+        ],
+    )
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.stdout)
+    assert parsed["auth"]["cognitoClientId"] == "client-ephemeral"
+    headers = called["headers"]
+    assert isinstance(headers, dict)
+    assert headers["x-enabler-profile-type"] == "ephemeral"

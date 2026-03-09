@@ -45,6 +45,7 @@ DEFAULT_TTL_SECONDS = int(os.environ.get("DEFAULT_TTL_SECONDS", "3600"))
 MAX_TTL_SECONDS = int(os.environ.get("MAX_TTL_SECONDS", "3600"))
 SCHEMA_VERSION = os.environ.get("SCHEMA_VERSION", "2026-02-17")
 USER_POOL_CLIENT_ID = os.environ.get("USER_POOL_CLIENT_ID", "")
+EPHEMERAL_USER_POOL_CLIENT_ID = os.environ.get("EPHEMERAL_USER_POOL_CLIENT_ID", "")
 
 UPLOAD_BUCKET = os.environ.get("UPLOAD_BUCKET", "")
 SQS_QUEUE_ARN = os.environ.get("SQS_QUEUE_ARN", "")
@@ -175,6 +176,34 @@ def _request_matches_path(event: dict[str, Any], expected_path: str) -> bool:
 
 def _parse_refresh_token(event: dict[str, Any]) -> str:
     return _get_header(event, "x-enabler-refresh-token").strip()
+
+
+def _parse_requested_profile_type(event: dict[str, Any]) -> str:
+    raw = _get_header(event, "x-enabler-profile-type").strip().lower()
+    if raw in {"", "named"}:
+        return "named"
+    if raw == "ephemeral":
+        return "ephemeral"
+    return "invalid"
+
+
+def _parse_requested_cognito_client_id(event: dict[str, Any]) -> str:
+    return _get_header(event, "x-enabler-cognito-client-id").strip()
+
+
+def _cognito_client_id_for_profile_type(profile_type: str) -> str:
+    if profile_type == "ephemeral":
+        return (EPHEMERAL_USER_POOL_CLIENT_ID or "").strip()
+    return (USER_POOL_CLIENT_ID or "").strip()
+
+
+def _cognito_client_kind_for_id(client_id: str) -> str:
+    raw = str(client_id or "").strip()
+    if raw and raw == str(EPHEMERAL_USER_POOL_CLIENT_ID or "").strip():
+        return "ephemeral"
+    if raw and raw == str(USER_POOL_CLIENT_ID or "").strip():
+        return "named"
+    return ""
 
 
 def _ddb_get_profile(sub: str) -> dict[str, Any] | None:
@@ -594,6 +623,18 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             wide_event["outcome"] = "error"
             return _response(status_code, body)
 
+        selected_cognito_client_id = (USER_POOL_CLIENT_ID or "").strip()
+        requested_profile_type = _parse_requested_profile_type(event)
+        if requested_profile_type == "invalid":
+            status_code = 422
+            body = {
+                "errorCode": "INVALID_REQUEST",
+                "message": "Unsupported requested profileType",
+                "requestId": request_id,
+            }
+            wide_event["outcome"] = "invalid_request"
+            return _response(status_code, body)
+
         if _request_matches_path(event, DELEGATION_REQUEST_PATH):
             if not _delegation_table():
                 return _response(
@@ -910,8 +951,18 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 Password=generated_password,
                 Permanent=True,
             )
+            selected_cognito_client_id = _cognito_client_id_for_profile_type("ephemeral")
+            if not selected_cognito_client_id:
+                status_code = 500
+                body = {
+                    "errorCode": "MISCONFIGURED",
+                    "message": "Server misconfigured",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "error"
+                return _response(status_code, body)
             resp = _cognito().initiate_auth(
-                ClientId=USER_POOL_CLIENT_ID,
+                ClientId=selected_cognito_client_id,
                 AuthFlow="USER_PASSWORD_AUTH",
                 AuthParameters={"USERNAME": ephemeral_username, "PASSWORD": generated_password},
             )
@@ -940,9 +991,21 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 }
                 wide_event["outcome"] = "unauthorized"
                 return _response(status_code, body)
+            requested_client_id = _parse_requested_cognito_client_id(event)
+            if requested_client_id:
+                if _cognito_client_kind_for_id(requested_client_id) == "":
+                    status_code = 401
+                    body = {
+                        "errorCode": "UNAUTHORIZED",
+                        "message": "Invalid Cognito client id",
+                        "requestId": request_id,
+                    }
+                    wide_event["outcome"] = "unauthorized"
+                    return _response(status_code, body)
+                selected_cognito_client_id = requested_client_id
             try:
                 resp = _cognito().initiate_auth(
-                    ClientId=USER_POOL_CLIENT_ID,
+                    ClientId=selected_cognito_client_id,
                     AuthFlow="REFRESH_TOKEN_AUTH",
                     AuthParameters={"REFRESH_TOKEN": refresh_token},
                 )
@@ -973,9 +1036,23 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
             username, password = basic
             input_username = username
+            basic_password = password
+            if requested_profile_type == "ephemeral":
+                selected_cognito_client_id = _cognito_client_id_for_profile_type("ephemeral")
+            else:
+                selected_cognito_client_id = _cognito_client_id_for_profile_type("named")
+            if not selected_cognito_client_id:
+                status_code = 500
+                body = {
+                    "errorCode": "MISCONFIGURED",
+                    "message": "Server misconfigured",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "error"
+                return _response(status_code, body)
             try:
                 resp = _cognito().initiate_auth(
-                    ClientId=USER_POOL_CLIENT_ID,
+                    ClientId=selected_cognito_client_id,
                     AuthFlow="USER_PASSWORD_AUTH",
                     AuthParameters={"USERNAME": username, "PASSWORD": password},
                 )
@@ -1107,6 +1184,46 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             }
             wide_event["outcome"] = "invalid_profile"
             return _response(status_code, body)
+        target_cognito_client_id = _cognito_client_id_for_profile_type(profile_type)
+        if not target_cognito_client_id:
+            status_code = 500
+            body = {
+                "errorCode": "MISCONFIGURED",
+                "message": "Server misconfigured",
+                "requestId": request_id,
+            }
+            wide_event["outcome"] = "error"
+            return _response(status_code, body)
+        if auth_mode == "basic" and target_cognito_client_id != selected_cognito_client_id:
+            try:
+                resp = _cognito().initiate_auth(
+                    ClientId=target_cognito_client_id,
+                    AuthFlow="USER_PASSWORD_AUTH",
+                    AuthParameters={"USERNAME": input_username, "PASSWORD": basic_password},
+                )
+            except Exception:
+                status_code = 401
+                body = {
+                    "errorCode": "UNAUTHORIZED",
+                    "message": "Incorrect username or password",
+                    "requestId": request_id,
+                }
+                wide_event["outcome"] = "unauthorized"
+                return _response(status_code, body)
+            auth_result = resp.get("AuthenticationResult") or {}
+            id_token = auth_result.get("IdToken") or ""
+            access_token = auth_result.get("AccessToken") or ""
+            refresh_token = auth_result.get("RefreshToken") or ""
+            token_type = auth_result.get("TokenType") or ""
+            expires_in = auth_result.get("ExpiresIn") or 0
+            try:
+                expires_in = int(expires_in)
+            except Exception:
+                expires_in = 0
+            jwt_claims = _decode_jwt_claims(id_token)
+            iss = jwt_claims.get("iss")
+            cognito_username = jwt_claims.get("cognito:username") or input_username
+            selected_cognito_client_id = target_cognito_client_id
 
         if scope == "provisioning":
             assume_role_arn = ASSUME_ROLE_PROVISIONING_ARN
@@ -1534,7 +1651,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         cognito_refs = {
             "issuer": issuer,
             "userPoolId": _parse_user_pool_id_from_issuer(issuer),
-            "userPoolClientId": USER_POOL_CLIENT_ID,
+            "userPoolClientId": selected_cognito_client_id,
             "openidConfigurationUrl": _join_url(issuer, ".well-known/openid-configuration")
             if issuer
             else "",
@@ -1639,12 +1756,12 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             "kind": "agent-enablement.credentials.v2",
             "schemaVersion": SCHEMA_VERSION,
             "requestId": request_id,
-            "principal": {"sub": sub, "issuer": iss, "username": cognito_username},
+            "principal": {"sub": sub, "issuer": iss, "username": cognito_username, "profileType": profile_type},
             "issuedAt": issued_at,
             "expiresAt": expiration_iso,
             "auth": {
                 "credentialsEndpoint": credentials_invoke_url,
-                "cognitoClientId": USER_POOL_CLIENT_ID,
+                "cognitoClientId": selected_cognito_client_id,
                 "renewalMode": "refresh-token-only",
                 "renewalPolicy": {
                     "refreshBeforeSeconds": 60,
@@ -1658,6 +1775,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 "agentId": agent_id,
                 "authMode": auth_mode,
                 "renewalMode": "refresh-token-only",
+                "profileType": profile_type,
             },
             "runtime": {
                 "serviceEndpoints": {

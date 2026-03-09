@@ -256,6 +256,12 @@ class AgentEnablementStack(Stack):
             generate_secret=False,
             refresh_token_validity=Duration.days(365),
         )
+        ephemeral_user_pool_client = user_pool.add_client(
+            "EphemeralAgentUserPoolClient",
+            auth_flows=cognito.AuthFlow(user_password=True, user_srp=True),
+            generate_secret=False,
+            refresh_token_validity=Duration.days(7),
+        )
         # Canonical prefix: agent-enablement/latest/...
         enablement_base_url = (
             f"https://{comms_files_bucket.bucket_regional_domain_name}/agent-enablement/latest"
@@ -945,6 +951,7 @@ class AgentEnablementStack(Stack):
             "MAX_TTL_SECONDS": str(session_duration_seconds),
             "SCHEMA_VERSION": schema_version,
             "USER_POOL_CLIENT_ID": user_pool_client.user_pool_client_id,
+            "EPHEMERAL_USER_POOL_CLIENT_ID": ephemeral_user_pool_client.user_pool_client_id,
             "USER_POOL_ID": user_pool.user_pool_id,
             "UPLOAD_BUCKET": upload_bucket.bucket_name,
             "SQS_QUEUE_ARN": agent_queue.queue_arn,
@@ -1519,6 +1526,12 @@ class AgentEnablementStack(Stack):
             self,
             "UserPoolClientId",
             value=user_pool_client.user_pool_client_id,
+        )
+
+        CfnOutput(
+            self,
+            "EphemeralUserPoolClientId",
+            value=ephemeral_user_pool_client.user_pool_client_id,
         )
 
         CfnOutput(

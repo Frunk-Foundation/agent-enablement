@@ -21,6 +21,7 @@ def _load_handler(monkeypatch):
     monkeypatch.setenv("MAX_TTL_SECONDS", "3600")
     monkeypatch.setenv("SCHEMA_VERSION", "2026-02-17")
     monkeypatch.setenv("USER_POOL_CLIENT_ID", "client-1")
+    monkeypatch.setenv("EPHEMERAL_USER_POOL_CLIENT_ID", "client-ephemeral")
     monkeypatch.setenv("USER_POOL_ID", "pool-1")
     monkeypatch.setenv("UPLOAD_BUCKET", "test-bucket")
     monkeypatch.setenv("SQS_QUEUE_ARN", "arn:aws:sqs:us-east-1:123456789012:q")
@@ -431,6 +432,67 @@ def test_refresh_route_missing_token_is_unauthorized(monkeypatch):
     assert out["statusCode"] == 401
     assert body["errorCode"] == "UNAUTHORIZED"
     assert "refresh token" in body["message"].lower()
+
+
+def test_refresh_uses_ephemeral_client_id_from_request_header(monkeypatch):
+    handler_module = _load_handler(monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    class FakeCognito:
+        def initiate_auth(self, **kwargs):
+            calls.append(kwargs)
+            payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephemeral-user"}
+            payload_b64 = (
+                __import__("base64")
+                .urlsafe_b64encode(__import__("json").dumps(payload).encode())
+                .decode()
+                .rstrip("=")
+            )
+            return {"AuthenticationResult": {"IdToken": f"a.{payload_b64}.c", "AccessToken": "at"}}
+
+    def fake_get_item(**kwargs):
+        return {
+            "Item": {
+                "sub": {"S": "21ebf510-90f1-7051-64e1-865ec0c362a8"},
+                "enabled": {"BOOL": True},
+                "profileType": {"S": "ephemeral"},
+                "assumeRoleArn": {"S": "arn:aws:iam::123456789012:role/BrokerRuntime"},
+                "s3Bucket": {"S": "test-bucket"},
+                "agentId": {"S": "ephemeral-user"},
+                "inboxQueueArn": {"S": "arn:aws:sqs:us-east-1:123456789012:inbox"},
+            }
+        }
+
+    class FakeSts:
+        def assume_role(self, **kwargs):
+            del kwargs
+            return {
+                "Credentials": {
+                    "AccessKeyId": "ASIA123",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                    "Expiration": datetime(2026, 2, 10, tzinfo=timezone.utc),
+                }
+            }
+
+    handler_module._cognito_client = FakeCognito()
+    handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
+    handler_module._sts_client = FakeSts()
+    event = {
+        "path": "/v1/credentials/refresh",
+        "headers": {
+            "x-enabler-refresh-token": "rt-in",
+            "x-enabler-cognito-client-id": "client-ephemeral",
+        },
+        "requestContext": {"requestId": "r1"},
+    }
+    out = handler_module.handler(event, None)
+    body = json.loads(out["body"])
+
+    assert out["statusCode"] == 200
+    assert calls[0]["ClientId"] == "client-ephemeral"
+    assert body["auth"]["cognitoClientId"] == "client-ephemeral"
+    assert body["principal"]["profileType"] == "ephemeral"
 
 
 def test_runtime_assume_role_includes_scoping_session_tags(monkeypatch):
@@ -851,7 +913,11 @@ def test_ephemeral_profile_omits_agent_workshop_credential_sets(monkeypatch):
     handler_module = _load_handler(monkeypatch)
 
     class FakeCognito:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
         def initiate_auth(self, **kwargs):
+            self.calls.append(kwargs)
             payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephemeral-user"}
             payload_b64 = (
                 __import__("base64")
@@ -890,9 +956,10 @@ def test_ephemeral_profile_omits_agent_workshop_credential_sets(monkeypatch):
             }
 
     sts = FakeSts()
+    cognito = FakeCognito()
     handler_module._ddb_client = type("D", (), {"get_item": staticmethod(fake_get_item)})()
     handler_module._sts_client = sts
-    handler_module._cognito_client = FakeCognito()
+    handler_module._cognito_client = cognito
 
     import base64
 
@@ -907,6 +974,9 @@ def test_ephemeral_profile_omits_agent_workshop_credential_sets(monkeypatch):
     assert "agentEnablement" in body["credentialSets"]
     assert "agentAWSWorkshopProvisioning" not in body["credentialSets"]
     assert "agentAWSWorkshopRuntime" not in body["credentialSets"]
+    assert cognito.calls[-1]["ClientId"] == "client-ephemeral"
+    assert body["auth"]["cognitoClientId"] == "client-ephemeral"
+    assert body["principal"]["profileType"] == "ephemeral"
 
 
 def test_invalid_profile_type_returns_422(monkeypatch):
@@ -1035,6 +1105,9 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
             }
 
     class FakeCognito:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
         def admin_create_user(self, **kwargs):
             del kwargs
 
@@ -1042,6 +1115,7 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
             del kwargs
 
         def initiate_auth(self, **kwargs):
+            self.calls.append(kwargs)
             payload = {"sub": "21ebf510-90f1-7051-64e1-865ec0c362a8", "iss": "iss", "cognito:username": "ephem-t1"}
             payload_b64 = (
                 __import__("base64")
@@ -1064,7 +1138,8 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
             }
 
     handler_module._ddb_client = FakeDdb()
-    handler_module._cognito_client = FakeCognito()
+    cognito = FakeCognito()
+    handler_module._cognito_client = cognito
     handler_module._sts_client = FakeSts()
     event = {
         "path": "/v1/delegation/redeem",
@@ -1076,6 +1151,8 @@ def test_delegation_redeem_response_includes_ephemeral_identity(monkeypatch):
     assert out["statusCode"] == 200
     assert body["ephemeralAgentId"] == "ephem-t1"
     assert body["ephemeralUsername"] == "ephem-t1"
+    assert cognito.calls[0]["ClientId"] == "client-ephemeral"
+    assert body["auth"]["cognitoClientId"] == "client-ephemeral"
 
 
 def test_delegation_redeem_retry_after_create_user_failure_is_recoverable(monkeypatch):
