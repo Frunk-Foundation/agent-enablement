@@ -636,7 +636,7 @@ class EnablerMcp:
                     "email_get": "Get one or more emails by id. args: ids.",
                     "email_query": "Query mailbox mail. args: mailboxId (optional), text (optional), unreadOnly (optional).",
                     "email_set": "Update durable email state. args: emailId, isUnread (optional), keywords (optional).",
-                    "emailsubmission_set": "Submit agent mail to one or more recipients. args: body plus toAgentIds and/or toContactIds (optional: subject, metaJson).",
+                    "emailsubmission_set": "Submit agent mail to one or more recipients. args: body plus toAgentIds and/or toContactIds (optional: subject, attachments, attachmentFilePaths, metaJson).",
                 },
             },
             "shortlinks.exec": {
@@ -699,7 +699,7 @@ class EnablerMcp:
             ("jmap-mail.exec", "email_get"): {"ids": ["3fWwMSkU3HT8X9p4RYM8C6"]},
             ("jmap-mail.exec", "email_query"): {"mailboxId": "inbox", "unreadOnly": True},
             ("jmap-mail.exec", "email_set"): {"emailId": "3fWwMSkU3HT8X9p4RYM8C6", "isUnread": False},
-            ("jmap-mail.exec", "emailsubmission_set"): {"toAgentIds": ["jay"], "subject": "Review", "body": "doorstop review uploaded"},
+            ("jmap-mail.exec", "emailsubmission_set"): {"toAgentIds": ["jay"], "subject": "Review", "body": "doorstop review uploaded", "attachmentFilePaths": ["README.md"]},
             ("shortlinks.exec", "help"): {"action": "create"},
             ("shortlinks.exec", "create"): {"targetUrl": "https://d1z3djyrl2kl58.cloudfront.net/path/file.html"},
             ("shortlinks.exec", "resolve_url"): {"code": "7wKzbwvsMDmDmpvB69QRtA"},
@@ -1323,6 +1323,8 @@ class EnablerMcp:
                 body=args.get("body"),
                 to_agent_ids=args.get("toAgentIds") or [],
                 to_contact_ids=args.get("toContactIds") or [],
+                attachments=args.get("attachments"),
+                attachment_file_paths=args.get("attachmentFilePaths") or [],
                 meta_json=json.dumps(meta_json) if isinstance(meta_json, dict) else None,
             )
         raise UsageError(f"unknown jmap mail action: {action}")

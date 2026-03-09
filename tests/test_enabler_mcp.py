@@ -178,6 +178,7 @@ def test_tools_call_help_jmap_mail_submission_example(monkeypatch, tmp_path: Pat
     assert "jmap-mail.exec" in text
     assert "toAgentIds" in text
     assert "body" in text
+    assert "attachmentFilePaths" in text
 
 
 def test_tools_call_help_examples_use_current_argument_names(monkeypatch, tmp_path: Path) -> None:

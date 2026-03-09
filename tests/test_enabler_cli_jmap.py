@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 
 from enabler_cli.apps.agent_admin_cli import (
     GlobalOpts,
@@ -30,6 +31,7 @@ def _base_jmap_doc() -> dict:
         },
         "references": {
             "awsRegion": "us-east-2",
+            "files": {"publicBaseUrl": "https://files.example.com"},
             "directory": {
                 "profileTableName": "AgentProfiles",
                 "profileAgentIdIndex": "agentId-index",
@@ -42,6 +44,13 @@ def _base_jmap_doc() -> dict:
                 "defaultMailboxId": "inbox",
             },
         },
+        "grants": [
+            {
+                "service": "s3",
+                "actions": ["s3:PutObject"],
+                "resources": ["arn:aws:s3:::files-bucket/public/sub-123/*"],
+            }
+        ],
     }
 
 
@@ -99,13 +108,33 @@ class _FakeDdb:
         raise AssertionError(f"unexpected get table: {table}")
 
 
+class _FakeS3:
+    def __init__(self):
+        self.uploads: list[dict[str, str]] = []
+
+    def upload_file(self, local_path, bucket, key, ExtraArgs=None):
+        self.uploads.append(
+            {
+                "local_path": str(local_path),
+                "bucket": bucket,
+                "key": key,
+                "content_type": str((ExtraArgs or {}).get("ContentType") or ""),
+            }
+        )
+
+
 class _FakeSession:
-    def __init__(self, ddb):
+    def __init__(self, ddb, *, s3=None):
         self._ddb = ddb
+        self._s3 = s3
 
     def client(self, name):
-        assert name == "dynamodb"
-        return self._ddb
+        if name == "dynamodb":
+            return self._ddb
+        if name == "s3":
+            assert self._s3 is not None
+            return self._s3
+        raise AssertionError(f"unexpected client: {name}")
 
 
 def test_jmap_contacts_set_and_query(monkeypatch, capsys):
@@ -153,6 +182,8 @@ def test_jmap_mail_submission_creates_inbox_mail(monkeypatch, capsys):
         to_agent_ids=["alice"],
         to_contact_ids=[],
         meta_json=None,
+        attachments=None,
+        attachment_file_paths=[],
     )
     assert cmd_jmap_mail_submission_set(args, _g()) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -161,6 +192,77 @@ def test_jmap_mail_submission_creates_inbox_mail(monkeypatch, capsys):
     assert created["to"]["agentId"] == "alice"
     assert created["mailboxIds"] == ["inbox"]
     assert created["isUnread"] is True
+    assert created["attachments"] == []
+
+
+def test_jmap_mail_submission_persists_preuploaded_attachments(monkeypatch, capsys):
+    ddb = _FakeDdb()
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
+        lambda _args, _g: _base_jmap_doc(),
+    )
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli._issued_session_from_doc",
+        lambda doc: (_FakeSession(ddb), doc["references"], "us-east-2"),
+    )
+
+    args = argparse.Namespace(
+        subject="Review",
+        body="See attachment",
+        to_agent_ids=["alice"],
+        to_contact_ids=[],
+        meta_json=None,
+        attachments=json.dumps(
+            [
+                {
+                    "name": "report.txt",
+                    "url": "https://files.example.com/public/sub-123/file-1/report.txt",
+                    "contentType": "text/plain",
+                    "sizeBytes": 42,
+                    "storageKey": "public/sub-123/file-1/report.txt",
+                }
+            ]
+        ),
+        attachment_file_paths=[],
+    )
+    assert cmd_jmap_mail_submission_set(args, _g()) == 0
+    payload = json.loads(capsys.readouterr().out)
+    created = next(iter(payload["created"].values()))
+    assert created["attachments"][0]["name"] == "report.txt"
+    assert created["attachments"][0]["storageKey"] == "public/sub-123/file-1/report.txt"
+    assert created["attachments"][0]["url"].startswith("https://files.example.com/")
+
+
+def test_jmap_mail_submission_uploads_local_attachment_paths(monkeypatch, tmp_path: Path, capsys):
+    ddb = _FakeDdb()
+    s3 = _FakeS3()
+    local_file = tmp_path / "report.txt"
+    local_file.write_text("hello attachment", encoding="utf-8")
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli._resolve_runtime_credentials_doc",
+        lambda _args, _g: _base_jmap_doc(),
+    )
+    monkeypatch.setattr(
+        "enabler_cli.apps.agent_admin_cli._issued_session_from_doc",
+        lambda doc: (_FakeSession(ddb, s3=s3), doc["references"], "us-east-2"),
+    )
+
+    args = argparse.Namespace(
+        subject="Review",
+        body="See local attachment",
+        to_agent_ids=["alice"],
+        to_contact_ids=[],
+        meta_json=None,
+        attachments=None,
+        attachment_file_paths=[str(local_file)],
+    )
+    assert cmd_jmap_mail_submission_set(args, _g()) == 0
+    payload = json.loads(capsys.readouterr().out)
+    created = next(iter(payload["created"].values()))
+    assert created["attachments"][0]["name"] == "report.txt"
+    assert created["attachments"][0]["url"].startswith("https://files.example.com/")
+    assert s3.uploads[0]["bucket"] == "files-bucket"
+    assert s3.uploads[0]["key"].startswith("public/sub-123/")
 
 
 def test_jmap_mail_query_returns_received_mail(monkeypatch, capsys):
@@ -182,6 +284,17 @@ def test_jmap_mail_query_returns_received_mail(monkeypatch, capsys):
         "receivedAt": {"S": "2026-03-09T00:00:00+00:00"},
         "createdAt": {"S": "2026-03-09T00:00:00+00:00"},
         "submissionId": {"S": "subm-1"},
+        "attachmentsJson": {
+            "S": json.dumps(
+                [
+                    {
+                        "attachmentId": "att-1",
+                        "name": "report.txt",
+                        "url": "https://files.example.com/public/sub-123/report.txt",
+                    }
+                ]
+            )
+        },
         "metaJson": {"S": "{}"},
     }
     monkeypatch.setattr(
@@ -198,3 +311,4 @@ def test_jmap_mail_query_returns_received_mail(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["ids"] == ["mail-1"]
     assert payload["list"][0]["from"]["agentId"] == "alice"
+    assert payload["list"][0]["attachments"][0]["attachmentId"] == "att-1"

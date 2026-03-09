@@ -221,6 +221,10 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 
 `fileshare.exec` `action=file` returns a CloudFront HTTPS `publicUrl` derived from `references.files.publicBaseUrl`. Uploads set S3 object metadata (`ContentType`, plus `ContentEncoding` when detectable) so CloudFront serves the correct file type.
 
+`jmap-mail.exec` `action=emailsubmission_set` supports attachments in two ways:
+- pass `attachments` with pre-uploaded fileshare-backed attachment objects
+- pass `attachmentFilePaths` to upload local files and attach them during submission
+
 `fileshare.exec` `action=folder` uploads recursively under one shared key prefix (preserving relative paths) and returns a manifest with `siteBaseUrl`, `rootUrl`, and per-file URLs. This supports static-site style uploads with multiple pages/assets under one prefix.
 
 ## Admin CLI

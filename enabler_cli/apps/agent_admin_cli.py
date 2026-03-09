@@ -1776,6 +1776,7 @@ def _ddb_item_email_to_json(item: dict[str, Any]) -> dict[str, Any]:
         "receivedAt": _ddb_str(item, "receivedAt"),
         "createdAt": _ddb_str(item, "createdAt"),
         "submissionId": _ddb_str(item, "submissionId"),
+        "attachments": _ddb_json(item, "attachmentsJson") or [],
         "meta": _ddb_json(item, "metaJson") or {},
     }
 
@@ -1827,6 +1828,98 @@ def _profile_lookup_by_agent_id(*, ddb: Any, profile_table_name: str, profile_ag
         if sub and username:
             return {"sub": sub, "agentId": username}
     raise UsageError(f"unknown enabled agent profile for agentId={agent_id!r}")
+
+
+def _attachments_arg_to_list(raw: Any) -> list[dict[str, Any]]:
+    if raw in (None, "", []):
+        return []
+    parsed = raw
+    if isinstance(raw, str):
+        parsed = _parse_json_arg(raw, label="attachments JSON")
+    if not isinstance(parsed, list):
+        raise UsageError("attachments must be a JSON array of objects")
+    out: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise UsageError("attachments must contain only objects")
+        out.append(dict(item))
+    return out
+
+
+def _normalize_attachment_object(*, item: dict[str, Any], default_public_base_url: str) -> dict[str, Any]:
+    name = str(item.get("name") or "").strip()
+    if not name:
+        raise UsageError("attachment is missing name")
+    url = str(item.get("url") or "").strip()
+    if not url:
+        raise UsageError("attachment is missing url")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise UsageError(f"attachment url must be http(s): {url!r}")
+    storage_key = str(item.get("storageKey") or "").strip()
+    if not storage_key and default_public_base_url:
+        base = default_public_base_url.rstrip("/")
+        if url.startswith(base + "/"):
+            storage_key = url[len(base) + 1 :]
+    normalized = {
+        "attachmentId": str(item.get("attachmentId") or "").strip() or uuid4_base58_22(),
+        "name": name,
+        "url": url,
+    }
+    if storage_key:
+        normalized["storageKey"] = storage_key
+    content_type = str(item.get("contentType") or "").strip()
+    if content_type:
+        normalized["contentType"] = content_type
+    content_encoding = str(item.get("contentEncoding") or "").strip()
+    if content_encoding:
+        normalized["contentEncoding"] = content_encoding
+    size_bytes = item.get("sizeBytes")
+    if size_bytes not in (None, ""):
+        try:
+            normalized["sizeBytes"] = int(size_bytes)
+        except Exception as e:
+            raise UsageError(f"attachment sizeBytes must be an integer: {e}") from e
+    return normalized
+
+
+def _upload_attachment_paths(
+    *,
+    attachment_file_paths: list[str],
+    args: argparse.Namespace,
+    g: GlobalOpts,
+) -> list[dict[str, Any]]:
+    if not attachment_file_paths:
+        return []
+    sess, bucket, allowed_prefix, public_base_url = _resolve_share_runtime(args, g)
+    if not public_base_url:
+        raise UsageError("missing files public base url in credentials references")
+    s3 = sess.client("s3")
+    attachments: list[dict[str, Any]] = []
+    for raw_path in attachment_file_paths:
+        local_path = Path(str(raw_path)).expanduser().resolve()
+        if not local_path.exists() or not local_path.is_file():
+            raise UsageError(f"attachment file not found: {local_path}")
+        attachment_id = uuid4_base58_22()
+        key = f"{allowed_prefix.rstrip('/')}/{attachment_id}/{local_path.name}".lstrip("/")
+        try:
+            _upload_local_file_to_s3(s3=s3, local_path=local_path, bucket=bucket, key=key)
+        except Exception as e:
+            raise OpError(f"failed to upload attachment to s3://{bucket}/{key}: {e}") from e
+        extra_args = _s3_upload_extra_args_for_path(local_path)
+        attachment: dict[str, Any] = {
+            "attachmentId": attachment_id,
+            "name": local_path.name,
+            "url": f"{public_base_url.rstrip('/')}/{key.lstrip('/')}",
+            "storageKey": key,
+            "sizeBytes": int(local_path.stat().st_size),
+        }
+        if str(extra_args.get("ContentType") or "").strip():
+            attachment["contentType"] = str(extra_args["ContentType"])
+        if str(extra_args.get("ContentEncoding") or "").strip():
+            attachment["contentEncoding"] = str(extra_args["ContentEncoding"])
+        attachments.append(attachment)
+    return attachments
 
 
 def cmd_jmap_contacts_get(args: argparse.Namespace, g: GlobalOpts) -> int:
@@ -2215,6 +2308,32 @@ def cmd_jmap_mail_submission_set(args: argparse.Namespace, g: GlobalOpts) -> int
     meta_payload = _parse_json_arg(meta_json, label="meta JSON") if meta_json else {}
     if meta_payload is not None and not isinstance(meta_payload, dict):
         raise UsageError("meta JSON must be an object")
+    public_base_url = _files_public_base_url_from_runtime_refs(args, g)
+    normalized_attachments = [
+        _normalize_attachment_object(item=item, default_public_base_url=public_base_url)
+        for item in _attachments_arg_to_list(getattr(args, "attachments", None))
+    ]
+    normalized_attachments.extend(
+        _upload_attachment_paths(
+            attachment_file_paths=[
+                str(v or "").strip()
+                for v in (getattr(args, "attachment_file_paths", None) or [])
+                if str(v or "").strip()
+            ],
+            args=args,
+            g=g,
+        )
+    )
+    seen_attachment_ids: set[str] = set()
+    deduped_attachments: list[dict[str, Any]] = []
+    for attachment in normalized_attachments:
+        attachment_id = str(attachment.get("attachmentId") or "").strip()
+        if not attachment_id:
+            raise UsageError("attachment normalization produced empty attachmentId")
+        if attachment_id in seen_attachment_ids:
+            raise UsageError(f"duplicate attachmentId: {attachment_id}")
+        seen_attachment_ids.add(attachment_id)
+        deduped_attachments.append(attachment)
     for recipient in deduped:
         email_id = uuid4_base58_22()
         item = {
@@ -2234,6 +2353,9 @@ def cmd_jmap_mail_submission_set(args: argparse.Namespace, g: GlobalOpts) -> int
             "receivedAt": {"S": now},
             "createdAt": {"S": now},
             "submissionId": {"S": submission_id},
+            "attachmentsJson": {
+                "S": json.dumps(deduped_attachments, separators=(",", ":"), sort_keys=True)
+            },
             "metaJson": {"S": json.dumps(meta_payload or {}, separators=(",", ":"), sort_keys=True)},
         }
         try:
@@ -3965,6 +4087,8 @@ def jmap_mail_submission_set(
     body: str = typer.Option(..., "--body", help="Mail body"),
     to_agent_ids: list[str] = typer.Option([], "--to-agent-id", help="Target agent id / username"),
     to_contact_ids: list[str] = typer.Option([], "--to-contact-id", help="Target saved contact id"),
+    attachments: str | None = typer.Option(None, "--attachments", help="JSON array of pre-uploaded attachment objects"),
+    attachment_file_paths: list[str] = typer.Option([], "--attachment-file-path", help="Local file path to upload and attach"),
     meta_json: str | None = typer.Option(None, "--meta-json", help="Optional JSON metadata object"),
 ) -> None:
     _invoke_from_locals(ctx, cmd_jmap_mail_submission_set, locals())
