@@ -34,6 +34,14 @@ from .runtime_core import (
     _write_cognito_env_file_from_doc,
     _write_credentials_cache_from_text,
     _write_sts_env_files_from_doc,
+    cmd_jmap_contacts_get,
+    cmd_jmap_contacts_query,
+    cmd_jmap_contacts_set,
+    cmd_jmap_mail_get,
+    cmd_jmap_mail_query,
+    cmd_jmap_mail_set,
+    cmd_jmap_mail_submission_set,
+    cmd_jmap_mailbox_get,
     cmd_share_file,
     cmd_share_folder,
     cmd_messages_ack,
@@ -215,12 +223,59 @@ class EnablerMcp:
         )
         self._register(
             ToolDef(
-                name="messages.exec",
-                description="Execute message actions (send/recv/ack/help). send args: to,text; ack args: ackToken|receiptHandle.",
+                name="eventbus.exec",
+                description="Execute EventBridge/SQS transport actions (send/recv/ack/help). send args: to,text; ack args: ackToken|receiptHandle.",
                 input_schema={
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["send", "recv", "ack", "help"]},
+                        "args": {"type": "object"},
+                        "async": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_messages_exec,
+            )
+        )
+        self._register(
+            ToolDef(
+                name="jmap-contacts.exec",
+                description="Execute JMAP contacts actions (contact_get/contact_query/contact_set/help).",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["contact_get", "contact_query", "contact_set", "help"],
+                        },
+                        "args": {"type": "object"},
+                        "async": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_messages_exec,
+            )
+        )
+        self._register(
+            ToolDef(
+                name="jmap-mail.exec",
+                description="Execute JMAP mail actions (mailbox_get/email_get/email_query/email_set/emailsubmission_set/help).",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "mailbox_get",
+                                "email_get",
+                                "email_query",
+                                "email_set",
+                                "emailsubmission_set",
+                                "help",
+                            ],
+                        },
                         "args": {"type": "object"},
                         "async": {"type": "boolean"},
                     },
@@ -555,13 +610,33 @@ class EnablerMcp:
                     "my_activity": "Get activity for current agent.",
                 },
             },
-            "messages.exec": {
-                "brief": "Inbox messaging operations.",
+            "eventbus.exec": {
+                "brief": "EventBridge/SQS event transport operations.",
                 "actions": {
-                    "help": "Describe message actions and examples.",
-                    "send": "Send message to another agent. args: to, text (optional: kind, messageJson, metaJson).",
-                    "recv": "Receive pending messages. args: maxNumber, waitSeconds, ackAll (optional: queueUrl, visibilityTimeout).",
-                    "ack": "Acknowledge a received message. args: ackToken (or receiptHandle, optional queueUrl).",
+                    "help": "Describe eventbus actions and examples.",
+                    "send": "Send event payload to another agent. args: to, text (optional: kind, messageJson, metaJson).",
+                    "recv": "Receive pending inbox event payloads. args: maxNumber, waitSeconds, ackAll (optional: queueUrl, visibilityTimeout).",
+                    "ack": "Acknowledge a received inbox event. args: ackToken (or receiptHandle, optional queueUrl).",
+                },
+            },
+            "jmap-contacts.exec": {
+                "brief": "JMAP-shaped contact operations for agent addressability.",
+                "actions": {
+                    "help": "Describe JMAP contacts actions and examples.",
+                    "contact_get": "Get one or more contacts by id. args: ids.",
+                    "contact_query": "Query owned contacts. args: text (optional).",
+                    "contact_set": "Create or replace one contact. args: name, targetAgentId (optional: contactId, description).",
+                },
+            },
+            "jmap-mail.exec": {
+                "brief": "JMAP-shaped mail operations backed by durable state.",
+                "actions": {
+                    "help": "Describe JMAP mail actions and examples.",
+                    "mailbox_get": "Get available mailboxes for the current agent.",
+                    "email_get": "Get one or more emails by id. args: ids.",
+                    "email_query": "Query mailbox mail. args: mailboxId (optional), text (optional), unreadOnly (optional).",
+                    "email_set": "Update durable email state. args: emailId, isUnread (optional), keywords (optional).",
+                    "emailsubmission_set": "Submit agent mail to one or more recipients. args: body plus toAgentIds and/or toContactIds (optional: subject, metaJson).",
                 },
             },
             "shortlinks.exec": {
@@ -592,7 +667,7 @@ class EnablerMcp:
             ("credentials.exec", "ensure"): {"set": "agentEnablement", "requireIdToken": False, "forceRefresh": False},
             ("credentials.exec", "set_agentid"): {"agentId": "jay"},
             ("credentials.exec", "list_sessions"): {},
-            ("credentials.exec", "delegation_request"): {"ttlSeconds": 600, "scopes": ["taskboard", "messages"], "purpose": "ephemeral handoff"},
+            ("credentials.exec", "delegation_request"): {"ttlSeconds": 600, "scopes": ["taskboard", "eventbus"], "purpose": "ephemeral handoff"},
             ("credentials.exec", "delegation_approve"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_status"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_redeem"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw", "switchToTarget": True},
@@ -611,10 +686,20 @@ class EnablerMcp:
             ("taskboard.exec", "status"): {"boardId": "board-123"},
             ("taskboard.exec", "audit"): {"boardId": "board-123", "limit": 50},
             ("taskboard.exec", "my_activity"): {"boardId": "board-123", "limit": 20},
-            ("messages.exec", "help"): {"action": "send"},
-            ("messages.exec", "send"): {"to": "jay", "text": "doorstop review uploaded"},
-            ("messages.exec", "recv"): {"maxNumber": 10, "waitSeconds": 10},
-            ("messages.exec", "ack"): {"ackToken": "AQEB..."},
+            ("eventbus.exec", "help"): {"action": "send"},
+            ("eventbus.exec", "send"): {"to": "jay", "text": "doorstop review uploaded"},
+            ("eventbus.exec", "recv"): {"maxNumber": 10, "waitSeconds": 10},
+            ("eventbus.exec", "ack"): {"ackToken": "AQEB..."},
+            ("jmap-contacts.exec", "help"): {"action": "contact_query"},
+            ("jmap-contacts.exec", "contact_get"): {"ids": ["3fWwMSkU3HT8X9p4RYM8C6"]},
+            ("jmap-contacts.exec", "contact_query"): {"text": "jay"},
+            ("jmap-contacts.exec", "contact_set"): {"name": "Jay", "targetAgentId": "jay"},
+            ("jmap-mail.exec", "help"): {"action": "email_query"},
+            ("jmap-mail.exec", "mailbox_get"): {},
+            ("jmap-mail.exec", "email_get"): {"ids": ["3fWwMSkU3HT8X9p4RYM8C6"]},
+            ("jmap-mail.exec", "email_query"): {"mailboxId": "inbox", "unreadOnly": True},
+            ("jmap-mail.exec", "email_set"): {"emailId": "3fWwMSkU3HT8X9p4RYM8C6", "isUnread": False},
+            ("jmap-mail.exec", "emailsubmission_set"): {"toAgentIds": ["jay"], "subject": "Review", "body": "doorstop review uploaded"},
             ("shortlinks.exec", "help"): {"action": "create"},
             ("shortlinks.exec", "create"): {"targetUrl": "https://d1z3djyrl2kl58.cloudfront.net/path/file.html"},
             ("shortlinks.exec", "resolve_url"): {"code": "7wKzbwvsMDmDmpvB69QRtA"},
@@ -632,7 +717,9 @@ class EnablerMcp:
             "credentials.exec",
             "ssm.exec",
             "taskboard.exec",
-            "messages.exec",
+            "eventbus.exec",
+            "jmap-contacts.exec",
+            "jmap-mail.exec",
             "shortlinks.exec",
             "fileshare.exec",
             "ops.result",
@@ -647,7 +734,7 @@ class EnablerMcp:
                     "",
                     "Example:",
                     "```json",
-                    '{"method":"tools/call","params":{"name":"help","arguments":{"tool":"messages.exec"}}}',
+                    '{"method":"tools/call","params":{"name":"help","arguments":{"tool":"jmap-mail.exec"}}}',
                     "```",
                 ]
             )
@@ -900,7 +987,7 @@ class EnablerMcp:
             if isinstance(scopes_raw, list):
                 scopes = [str(v).strip() for v in scopes_raw if str(v).strip()]
             else:
-                scopes = ["taskboard", "messages"]
+                scopes = ["taskboard", "eventbus"]
             ttl_seconds = int(args.get("ttlSeconds") or 600)
             purpose = str(args.get("purpose") or "")
             request_resp = self._post_json_checked(
@@ -1137,9 +1224,9 @@ class EnablerMcp:
             target_action = str(args.get("action") or "").strip()
             return {
                 "kind": "enabler.mcp.help.v1",
-                "tool": "messages.exec",
+                "tool": "eventbus.exec",
                 "action": target_action,
-                "text": self._help_text(tool_name="messages.exec", action=target_action),
+                "text": self._help_text(tool_name="eventbus.exec", action=target_action),
             }
         if action == "send":
             msg_json = args.get("messageJson")
@@ -1172,7 +1259,73 @@ class EnablerMcp:
                 receipt_handle=args.get("receiptHandle"),
                 queue_url=args.get("queueUrl"),
             )
-        raise UsageError(f"unknown messages action: {action}")
+        raise UsageError(f"unknown eventbus action: {action}")
+
+    def _dispatch_jmap_contacts(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "jmap-contacts.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="jmap-contacts.exec", action=target_action),
+            }
+        if action == "contact_get":
+            return self._cmd_json(cmd_jmap_contacts_get, g=g, ids=args.get("ids"))
+        if action == "contact_query":
+            return self._cmd_json(cmd_jmap_contacts_query, g=g, text=args.get("text"))
+        if action == "contact_set":
+            return self._cmd_json(
+                cmd_jmap_contacts_set,
+                g=g,
+                contact_id=args.get("contactId"),
+                name=args.get("name"),
+                target_agent_id=args.get("targetAgentId"),
+                description=args.get("description"),
+            )
+        raise UsageError(f"unknown jmap contacts action: {action}")
+
+    def _dispatch_jmap_mail(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
+        if action == "help":
+            target_action = str(args.get("action") or "").strip()
+            return {
+                "kind": "enabler.mcp.help.v1",
+                "tool": "jmap-mail.exec",
+                "action": target_action,
+                "text": self._help_text(tool_name="jmap-mail.exec", action=target_action),
+            }
+        if action == "mailbox_get":
+            return self._cmd_json(cmd_jmap_mailbox_get, g=g)
+        if action == "email_get":
+            return self._cmd_json(cmd_jmap_mail_get, g=g, ids=args.get("ids"))
+        if action == "email_query":
+            return self._cmd_json(
+                cmd_jmap_mail_query,
+                g=g,
+                mailbox_id=args.get("mailboxId"),
+                text=args.get("text"),
+                unread_only=bool(args.get("unreadOnly", False)),
+            )
+        if action == "email_set":
+            return self._cmd_json(
+                cmd_jmap_mail_set,
+                g=g,
+                email_id=args.get("emailId"),
+                is_unread=args.get("isUnread"),
+                keywords=args.get("keywords"),
+            )
+        if action == "emailsubmission_set":
+            meta_json = args.get("metaJson")
+            return self._cmd_json(
+                cmd_jmap_mail_submission_set,
+                g=g,
+                subject=args.get("subject"),
+                body=args.get("body"),
+                to_agent_ids=args.get("toAgentIds") or [],
+                to_contact_ids=args.get("toContactIds") or [],
+                meta_json=json.dumps(meta_json) if isinstance(meta_json, dict) else None,
+            )
+        raise UsageError(f"unknown jmap mail action: {action}")
 
     def _dispatch_shortlinks(self, action: str, args: dict[str, Any], *, g: GlobalOpts) -> Any:
         if action == "help":
@@ -1305,7 +1458,11 @@ class EnablerMcp:
             return None, True
         if tool_name == "ssm.exec":
             return "agentEnablement", False
-        if tool_name == "messages.exec":
+        if tool_name == "eventbus.exec":
+            return "agentEnablement", False
+        if tool_name == "jmap-contacts.exec":
+            return "agentEnablement", False
+        if tool_name == "jmap-mail.exec":
             return "agentEnablement", False
         if tool_name == "fileshare.exec":
             return "agentEnablement", False
@@ -1325,7 +1482,15 @@ class EnablerMcp:
             return tool.handler(arguments)
         if tool.name == "credentials.status":
             return tool.handler(arguments)
-        if tool.name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec"}:
+        if tool.name in {
+            "taskboard.exec",
+            "ssm.exec",
+            "eventbus.exec",
+            "jmap-contacts.exec",
+            "jmap-mail.exec",
+            "shortlinks.exec",
+            "fileshare.exec",
+        }:
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
             if not isinstance(action_args, dict):
@@ -1335,8 +1500,12 @@ class EnablerMcp:
                     return self._dispatch_taskboard(action, action_args, g=g)
                 if tool.name == "ssm.exec":
                     return self._dispatch_ssm(action, action_args, g=g)
-                if tool.name == "messages.exec":
+                if tool.name == "eventbus.exec":
                     return self._dispatch_messages(action, action_args, g=g)
+                if tool.name == "jmap-contacts.exec":
+                    return self._dispatch_jmap_contacts(action, action_args, g=g)
+                if tool.name == "jmap-mail.exec":
+                    return self._dispatch_jmap_mail(action, action_args, g=g)
                 if tool.name == "shortlinks.exec":
                     return self._dispatch_shortlinks(action, action_args, g=g)
                 if tool.name == "fileshare.exec":
@@ -1357,12 +1526,24 @@ class EnablerMcp:
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_ssm(action, action_args, g=g)
-        if tool.name == "messages.exec":
+        if tool.name == "eventbus.exec":
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
             if not isinstance(action_args, dict):
                 action_args = {}
             return self._dispatch_messages(action, action_args, g=g)
+        if tool.name == "jmap-contacts.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_jmap_contacts(action, action_args, g=g)
+        if tool.name == "jmap-mail.exec":
+            action = str(arguments.get("action") or "").strip()
+            action_args = arguments.get("args")
+            if not isinstance(action_args, dict):
+                action_args = {}
+            return self._dispatch_jmap_mail(action, action_args, g=g)
         if tool.name == "shortlinks.exec":
             action = str(arguments.get("action") or "").strip()
             action_args = arguments.get("args")
@@ -1416,7 +1597,20 @@ class EnablerMcp:
         if not self._is_bound():
             allow_unbound = (
                 (tool.name == "credentials.exec" and action in {"delegation_request", "delegation_status", "delegation_redeem"})
-                or (tool.name in {"credentials.exec", "taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec"} and action == "help")
+                or (
+                    tool.name
+                    in {
+                        "credentials.exec",
+                        "taskboard.exec",
+                        "ssm.exec",
+                        "eventbus.exec",
+                        "jmap-contacts.exec",
+                        "jmap-mail.exec",
+                        "shortlinks.exec",
+                        "fileshare.exec",
+                    }
+                    and action == "help"
+                )
                 or tool.name == "help"
                 or tool.name == "credentials.status"
             )
@@ -1483,7 +1677,16 @@ class EnablerMcp:
 
             try:
                 wants_async = bool(arguments.get("async", False))
-                if wants_async and name in {"taskboard.exec", "ssm.exec", "messages.exec", "shortlinks.exec", "fileshare.exec", "credentials.exec"}:
+                if wants_async and name in {
+                    "taskboard.exec",
+                    "ssm.exec",
+                    "eventbus.exec",
+                    "jmap-contacts.exec",
+                    "jmap-mail.exec",
+                    "shortlinks.exec",
+                    "fileshare.exec",
+                    "credentials.exec",
+                }:
                     result = self._enqueue_operation(tool, arguments)
                 else:
                     result = self._execute_tool_now(

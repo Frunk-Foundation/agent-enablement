@@ -206,6 +206,24 @@ class AgentEnablementStack(Stack):
             sort_key=ddb.Attribute(name="actorTsBoardTask", type=ddb.AttributeType.STRING),
             projection_type=ddb.ProjectionType.ALL,
         )
+        contacts_table = ddb.Table(
+            self,
+            "AgentContacts",
+            partition_key=ddb.Attribute(name="ownerSub", type=ddb.AttributeType.STRING),
+            sort_key=ddb.Attribute(name="contactId", type=ddb.AttributeType.STRING),
+            billing_mode=ddb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=stateful_removal_policy,
+        )
+        mail_table = ddb.Table(
+            self,
+            "AgentMail",
+            partition_key=ddb.Attribute(name="ownerSub", type=ddb.AttributeType.STRING),
+            sort_key=ddb.Attribute(name="emailId", type=ddb.AttributeType.STRING),
+            billing_mode=ddb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=stateful_removal_policy,
+        )
         delegation_requests_table = ddb.Table(
             self,
             "DelegationRequests",
@@ -331,6 +349,20 @@ class AgentEnablementStack(Stack):
                     resources=[agent_bus.event_bus_arn],
                 ),
                 iam.PolicyStatement(
+                    actions=[
+                        "dynamodb:GetItem",
+                        "dynamodb:PutItem",
+                        "dynamodb:UpdateItem",
+                        "dynamodb:Query",
+                    ],
+                    resources=[
+                        contacts_table.table_arn,
+                        mail_table.table_arn,
+                        profile_table.table_arn,
+                        f"{profile_table.table_arn}/index/agentId-index",
+                    ],
+                ),
+                iam.PolicyStatement(
                     actions=["execute-api:Invoke"],
                     resources=[sandbox_api_invoke_arn],
                 ),
@@ -447,6 +479,24 @@ class AgentEnablementStack(Stack):
                                 },
                                 "BoolIfExists": {"events:eventBusInvocation": "false"},
                             },
+                        ),
+                        iam.PolicyStatement(
+                            actions=[
+                                "dynamodb:GetItem",
+                                "dynamodb:PutItem",
+                                "dynamodb:UpdateItem",
+                                "dynamodb:Query",
+                            ],
+                            resources=[contacts_table.table_arn, mail_table.table_arn],
+                            conditions={
+                                "ForAllValues:StringEquals": {
+                                    "dynamodb:LeadingKeys": ["${aws:PrincipalTag/sub}"]
+                                }
+                            },
+                        ),
+                        iam.PolicyStatement(
+                            actions=["dynamodb:Query"],
+                            resources=[f"{profile_table.table_arn}/index/agentId-index"],
                         ),
                         iam.PolicyStatement(
                             actions=["execute-api:Invoke"],
@@ -871,6 +921,9 @@ class AgentEnablementStack(Stack):
 
         credentials_env = {
             "PROFILE_TABLE_NAME": profile_table.table_name,
+            "PROFILE_AGENT_ID_INDEX": "agentId-index",
+            "CONTACTS_TABLE_NAME": contacts_table.table_name,
+            "MAIL_TABLE_NAME": mail_table.table_name,
             "DELEGATION_REQUESTS_TABLE_NAME": delegation_requests_table.table_name,
             "ASSUME_ROLE_RUNTIME_ARN": broker_target_role.role_arn,
             "ASSUME_ROLE_PROVISIONING_ARN": broker_provisioning_role.role_arn,
@@ -1060,6 +1113,9 @@ class AgentEnablementStack(Stack):
         )
         taskboard_tasks_table.grant_read_write_data(taskboard_fn)
         taskboard_audit_table.grant_read_write_data(taskboard_fn)
+
+        CfnOutput(self, "ContactsTableName", value=contacts_table.table_name)
+        CfnOutput(self, "MailTableName", value=mail_table.table_name)
 
         events.Rule(
             self,

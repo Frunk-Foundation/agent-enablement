@@ -95,7 +95,7 @@ def test_call_maps_action_async_and_args_json(monkeypatch) -> None:
 def test_inspect_uses_help_tool(monkeypatch) -> None:
     _reset_fake()
     monkeypatch.setattr(mcp_cli, "EnablerMcp", _FakeMcp)
-    result = runner.invoke(mcp_cli.app, ["inspect", "messages.exec", "--action", "recv"])
+    result = runner.invoke(mcp_cli.app, ["inspect", "eventbus.exec", "--action", "recv"])
     assert result.exit_code == 0
     parsed = json.loads(result.stdout)
     assert parsed["kind"] == "help"
@@ -103,7 +103,7 @@ def test_inspect_uses_help_tool(monkeypatch) -> None:
     params = req["params"]
     assert isinstance(params, dict)
     assert params["name"] == "help"
-    assert params["arguments"] == {"tool": "messages.exec", "action": "recv"}
+    assert params["arguments"] == {"tool": "eventbus.exec", "action": "recv"}
 
 
 def test_raw_requires_exactly_one_request_source() -> None:

@@ -117,7 +117,7 @@ def test_delegation_request_calls_request_endpoint(monkeypatch, tmp_path: Path) 
             "delegation",
             "request",
             "--scopes",
-            "taskboard,messages",
+            "taskboard,eventbus",
             "--ttl-seconds",
             "300",
             "--purpose",
@@ -132,7 +132,7 @@ def test_delegation_request_calls_request_endpoint(monkeypatch, tmp_path: Path) 
     headers = called["headers"]
     assert isinstance(headers, dict)
     assert headers["x-api-key"] == "key-1"
-    assert called["body"] == {"scopes": ["taskboard", "messages"], "ttlSeconds": 300, "purpose": "smoke"}
+    assert called["body"] == {"scopes": ["taskboard", "eventbus"], "ttlSeconds": 300, "purpose": "smoke"}
 
 
 def test_delegation_redeem_writes_cache_and_reports_manifest(monkeypatch, tmp_path: Path) -> None:

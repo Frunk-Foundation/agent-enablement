@@ -76,7 +76,9 @@ def test_tools_list_matches_consolidated_contract(monkeypatch, tmp_path: Path) -
         "credentials.exec",
         "ssm.exec",
         "taskboard.exec",
-        "messages.exec",
+        "eventbus.exec",
+        "jmap-contacts.exec",
+        "jmap-mail.exec",
         "shortlinks.exec",
         "fileshare.exec",
         "ops.result",
@@ -112,13 +114,13 @@ def test_tools_call_help_action_detail(monkeypatch, tmp_path: Path) -> None:
             "jsonrpc": "2.0",
             "id": 211,
             "method": "tools/call",
-            "params": {"name": "help", "arguments": {"tool": "messages.exec", "action": "recv"}},
+            "params": {"name": "help", "arguments": {"tool": "eventbus.exec", "action": "recv"}},
         }
     )
 
     assert isinstance(resp, dict)
     text = resp["result"]["content"][0]["text"]
-    assert "messages.exec" in text
+    assert "eventbus.exec" in text
     assert "recv" in text
     assert "tools/call" in text
     assert "maxNumber" in text
@@ -158,6 +160,24 @@ def test_tools_call_help_ssm_get_includes_name_example(monkeypatch, tmp_path: Pa
     text = resp["result"]["content"][0]["text"]
     assert "ssm.exec" in text
     assert "name" in text
+
+
+def test_tools_call_help_jmap_mail_submission_example(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 220,
+            "method": "tools/call",
+            "params": {"name": "help", "arguments": {"tool": "jmap-mail.exec", "action": "emailsubmission_set"}},
+        }
+    )
+    assert isinstance(resp, dict)
+    text = resp["result"]["content"][0]["text"]
+    assert "jmap-mail.exec" in text
+    assert "toAgentIds" in text
+    assert "body" in text
 
 
 def test_tools_call_help_examples_use_current_argument_names(monkeypatch, tmp_path: Path) -> None:
@@ -257,7 +277,10 @@ def test_tools_call_credentials_status(monkeypatch, tmp_path: Path) -> None:
     assert parsed["kind"] == "enabler.creds.status.v1"
 
 
-def test_tools_call_credentials_status_unbound() -> None:
+def test_tools_call_credentials_status_unbound(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     mcp = EnablerMcp(agent_id="")
     resp = mcp.handle_request(
         {
@@ -564,7 +587,7 @@ def test_sts_tools_require_agent_enablement_set(monkeypatch, tmp_path: Path) -> 
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "messages.exec", "arguments": {"action": "recv", "args": {}}},
+            "params": {"name": "eventbus.exec", "arguments": {"action": "recv", "args": {}}},
         }
     )
 
@@ -613,7 +636,7 @@ def test_async_operation_lifecycle(monkeypatch, tmp_path: Path) -> None:
             "jsonrpc": "2.0",
             "id": 6,
             "method": "tools/call",
-            "params": {"name": "messages.exec", "arguments": {"action": "recv", "args": {}, "async": True}},
+            "params": {"name": "eventbus.exec", "arguments": {"action": "recv", "args": {}, "async": True}},
         }
     )
 
@@ -644,6 +667,34 @@ def test_async_operation_lifecycle(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(result, dict)
     assert result["operationId"] == op_id
     assert result["result"]["kind"] == "enabler.messages.recv.v1"
+
+
+def test_jmap_mail_dispatch_calls_submission_command(monkeypatch, tmp_path: Path) -> None:
+    _session_cache(tmp_path, monkeypatch)
+
+    def _fake_submit(_args, _g):
+        print(json.dumps({"kind": "enabler.jmap.mail.submission.set.v1", "created": {}}))
+        return 0
+
+    monkeypatch.setattr("enabler_cli.mcp_server.cmd_jmap_mail_submission_set", _fake_submit)
+    mcp = EnablerMcp(agent_id="agent-a")
+    resp = mcp.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 221,
+            "method": "tools/call",
+            "params": {
+                "name": "jmap-mail.exec",
+                "arguments": {
+                    "action": "emailsubmission_set",
+                    "args": {"toAgentIds": ["jay"], "body": "hello"},
+                },
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    parsed = json.loads(resp["result"]["content"][0]["text"])
+    assert parsed["kind"] == "enabler.jmap.mail.submission.set.v1"
 
 
 def test_stdio_newline_transport_initialize_and_tools_list() -> None:
@@ -739,7 +790,10 @@ def test_stdio_startup_without_agent_id_exits_with_helpful_error() -> None:
         proc.wait(timeout=3)
 
 
-def test_unbound_non_credentials_tool_fails_with_unbound_identity() -> None:
+def test_unbound_non_credentials_tool_fails_with_unbound_identity(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     mcp = EnablerMcp(agent_id="")
     resp = mcp.handle_request(
         {
@@ -754,6 +808,9 @@ def test_unbound_non_credentials_tool_fails_with_unbound_identity() -> None:
 
 
 def test_unbound_delegation_request_uses_env_endpoint(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     mcp = EnablerMcp(agent_id="")
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
     monkeypatch.setenv("ENABLER_CREDENTIALS_ENDPOINT", "https://api.example.com/prod/v1/credentials")
@@ -784,6 +841,8 @@ def test_unbound_delegation_request_uses_env_endpoint(monkeypatch) -> None:
 
 
 def test_unbound_delegation_redeem_binds_to_server_ephemeral_id(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
     monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
     monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
     monkeypatch.setenv("ENABLER_API_KEY", "api-key")
@@ -887,6 +946,8 @@ def test_credentials_exec_set_agentid_switches_default_context(monkeypatch, tmp_
 
 
 def test_credentials_exec_set_agentid_rejects_missing_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_COGNITO_USERNAME", raising=False)
     _session_cache(tmp_path, monkeypatch, agent_id="agent-a")
     mcp = EnablerMcp(agent_id="agent-a")
     resp = mcp.handle_request(
@@ -919,7 +980,7 @@ def test_async_operations_pin_agentid_at_enqueue(monkeypatch, tmp_path: Path) ->
             "jsonrpc": "2.0",
             "id": 13,
             "method": "tools/call",
-            "params": {"name": "messages.exec", "arguments": {"action": "recv", "args": {}, "async": True}},
+            "params": {"name": "eventbus.exec", "arguments": {"action": "recv", "args": {}, "async": True}},
         }
     )
     assert isinstance(submit, dict)
@@ -997,7 +1058,7 @@ def test_credentials_exec_delegation_flow(monkeypatch, tmp_path: Path) -> None:
                         "kind": "agent-enablement.delegation.request.v1",
                         "requestCode": "req-1",
                         "expiresAt": "2099-01-01T00:00:00Z",
-                        "scopes": ["taskboard", "messages"],
+                        "scopes": ["taskboard", "eventbus"],
                         "ephemeralUsername": "ephem-1",
                         "ephemeralAgentId": "ephem-a1",
                     }

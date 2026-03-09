@@ -315,7 +315,7 @@ app.add_typer(session_app, name="session")
 @delegation_app.command("request", help="Create a short-code delegation request.")
 def delegation_request(
     ctx: typer.Context,
-    scopes: str = typer.Option("taskboard,messages", "--scopes", help="Comma-separated scopes"),
+    scopes: str = typer.Option("taskboard,eventbus", "--scopes", help="Comma-separated scopes"),
     ttl_seconds: int = typer.Option(600, "--ttl-seconds", help="Delegation request TTL in seconds"),
     purpose: str = typer.Option("", "--purpose", help="Purpose text for audit metadata"),
 ) -> None:

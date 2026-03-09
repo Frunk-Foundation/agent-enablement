@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 def _load_handler(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("PROFILE_TABLE_NAME", "AgentProfiles")
+    monkeypatch.setenv("PROFILE_AGENT_ID_INDEX", "agentId-index")
+    monkeypatch.setenv("CONTACTS_TABLE_NAME", "AgentContacts")
+    monkeypatch.setenv("MAIL_TABLE_NAME", "AgentMail")
     monkeypatch.setenv("ASSUME_ROLE_RUNTIME_ARN", "arn:aws:iam::123456789012:role/BrokerRuntime")
     monkeypatch.setenv("ASSUME_ROLE_PROVISIONING_ARN", "arn:aws:iam::123456789012:role/BrokerProvisioning")
     monkeypatch.setenv("CFN_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/AgentsAccess-cfn-exec")
@@ -140,9 +143,12 @@ def test_success_response_contains_credentials_and_catalog(monkeypatch):
     assert refs.get("cognito", {}).get("issuer") == "iss"
     assert refs.get("s3", {}).get("bucket") == "test-bucket"
     assert refs.get("s3", {}).get("allowedPrefix") == f"f/{body['constraints']['uploadPrefixBase58']}/"
-    assert refs.get("messages", {}).get("agentId") == "agent-user"
-    assert refs.get("messages", {}).get("eventBusArn") == "arn:aws:events:us-east-1:123456789012:event-bus/b"
-    assert refs.get("messages", {}).get("inboxQueueArn") == "arn:aws:sqs:us-east-1:123456789012:inbox"
+    assert refs.get("eventbus", {}).get("agentId") == "agent-user"
+    assert refs.get("eventbus", {}).get("eventBusArn") == "arn:aws:events:us-east-1:123456789012:event-bus/b"
+    assert refs.get("eventbus", {}).get("inboxQueueArn") == "arn:aws:sqs:us-east-1:123456789012:inbox"
+    assert refs.get("jmapContacts", {}).get("tableName") == "AgentContacts"
+    assert refs.get("jmapMail", {}).get("tableName") == "AgentMail"
+    assert refs.get("directory", {}).get("profileTableName") == "AgentProfiles"
     assert refs.get("files", {}).get("publicBaseUrl") == "https://d222222abcdef8.cloudfront.net/"
     ct = body.get("cognitoTokens")
     assert isinstance(ct, dict)
@@ -165,6 +171,10 @@ def test_success_response_contains_credentials_and_catalog(monkeypatch):
     assert isinstance(execute_api_grant, dict)
     assert set(execute_api_grant.get("actions") or []) == {"execute-api:Invoke"}
     assert execute_api_grant.get("resources") == ["arn:aws:execute-api:us-east-2:123456789012:*"]
+    dynamodb_grant = next((g for g in body["grants"] if g.get("service") == "dynamodb"), None)
+    assert isinstance(dynamodb_grant, dict)
+    assert "AgentContacts" in json.dumps(dynamodb_grant.get("resources"), sort_keys=True)
+    assert "AgentMail" in json.dumps(dynamodb_grant.get("resources"), sort_keys=True)
     assert out["headers"]["cache-control"] == "no-store"
 
 
@@ -254,7 +264,7 @@ def test_success_response_includes_agent_workshop_credential_set_when_configured
     assert len(sts.calls) == 3
     assert "credentialSets" in body
     assert body["credentialSets"]["agentEnablement"]["credentials"]["accessKeyId"] == body["credentials"]["accessKeyId"]
-    assert body["credentialSets"]["agentEnablement"]["references"]["messages"]["agentId"] == "agent-user"
+    assert body["credentialSets"]["agentEnablement"]["references"]["eventbus"]["agentId"] == "agent-user"
 
     assert body["credentialSets"]["agentAWSWorkshopProvisioning"]["accountId"] == "999999999999"
     assert body["credentialSets"]["agentAWSWorkshopProvisioning"]["awsRegion"] == "us-east-2"
@@ -945,7 +955,7 @@ def test_delegation_request_route_issues_short_code(monkeypatch):
     handler_module._ddb_client = FakeDdb()
     event = {
         "path": "/v1/delegation/requests",
-        "body": json.dumps({"scopes": ["taskboard", "messages"], "ttlSeconds": 600, "purpose": "test"}),
+        "body": json.dumps({"scopes": ["taskboard", "eventbus"], "ttlSeconds": 600, "purpose": "test"}),
         "requestContext": {
             "requestId": "r1",
             "identity": {"sourceIp": "127.0.0.1"},

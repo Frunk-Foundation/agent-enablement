@@ -1552,9 +1552,33 @@ def cmd_agent_credential_process(args: argparse.Namespace, g: GlobalOpts) -> int
 
 
 def _messages_ref_from_refs(refs: dict[str, Any]) -> dict[str, Any]:
+    eventbus_ref = refs.get("eventbus")
+    if isinstance(eventbus_ref, dict):
+        return eventbus_ref
     messages_ref = refs.get("messages")
     if isinstance(messages_ref, dict):
         return messages_ref
+    return {}
+
+
+def _jmap_contacts_ref_from_refs(refs: dict[str, Any]) -> dict[str, Any]:
+    val = refs.get("jmapContacts")
+    if isinstance(val, dict):
+        return val
+    return {}
+
+
+def _jmap_mail_ref_from_refs(refs: dict[str, Any]) -> dict[str, Any]:
+    val = refs.get("jmapMail")
+    if isinstance(val, dict):
+        return val
+    return {}
+
+
+def _directory_ref_from_refs(refs: dict[str, Any]) -> dict[str, Any]:
+    val = refs.get("directory")
+    if isinstance(val, dict):
+        return val
     return {}
 
 
@@ -1669,6 +1693,565 @@ def _message_ack_token_decode(token: str) -> tuple[str, str]:
     if not queue_url or not receipt_handle:
         raise UsageError("invalid ack token: missing queueUrl or receiptHandle")
     return queue_url, receipt_handle
+
+
+def _jmap_identity(root_doc: dict[str, Any]) -> tuple[str, str]:
+    principal = root_doc.get("principal")
+    if not isinstance(principal, dict):
+        raise UsageError("missing principal in creds JSON")
+    sub = str(principal.get("sub") or "").strip()
+    agent_id = str(principal.get("username") or "").strip()
+    if not sub or not agent_id:
+        raise UsageError("missing principal.sub or principal.username in creds JSON")
+    return sub, agent_id
+
+
+def _ddb_str(item: dict[str, Any], key: str, default: str = "") -> str:
+    val = item.get(key)
+    if not isinstance(val, dict):
+        return default
+    if "S" in val:
+        return str(val["S"] or "").strip()
+    return default
+
+
+def _ddb_bool(item: dict[str, Any], key: str, default: bool = False) -> bool:
+    val = item.get(key)
+    if not isinstance(val, dict) or "BOOL" not in val:
+        return default
+    return bool(val["BOOL"])
+
+
+def _ddb_strs(item: dict[str, Any], key: str) -> list[str]:
+    val = item.get(key)
+    if not isinstance(val, dict):
+        return []
+    raw = val.get("SS")
+    if not isinstance(raw, list):
+        return []
+    return [str(v).strip() for v in raw if str(v or "").strip()]
+
+
+def _ddb_json(item: dict[str, Any], key: str) -> Any:
+    raw = _ddb_str(item, key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+def _ddb_item_contact_to_json(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "contactId": _ddb_str(item, "contactId"),
+        "ownerSub": _ddb_str(item, "ownerSub"),
+        "name": _ddb_str(item, "name"),
+        "targetAgentId": _ddb_str(item, "targetAgentId"),
+        "targetSub": _ddb_str(item, "targetSub"),
+        "description": _ddb_str(item, "description"),
+        "updatedAt": _ddb_str(item, "updatedAt"),
+    }
+
+
+def _ddb_item_email_to_json(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "emailId": _ddb_str(item, "emailId"),
+        "ownerSub": _ddb_str(item, "ownerSub"),
+        "threadId": _ddb_str(item, "threadId"),
+        "mailboxIds": _ddb_strs(item, "mailboxIds"),
+        "from": {
+            "agentId": _ddb_str(item, "fromAgentId"),
+            "sub": _ddb_str(item, "fromSub"),
+        },
+        "to": {
+            "agentId": _ddb_str(item, "toAgentId"),
+            "sub": _ddb_str(item, "toSub"),
+        },
+        "subject": _ddb_str(item, "subject"),
+        "body": _ddb_str(item, "body"),
+        "preview": _ddb_str(item, "preview"),
+        "keywords": _ddb_strs(item, "keywords"),
+        "isUnread": _ddb_bool(item, "isUnread", default=True),
+        "receivedAt": _ddb_str(item, "receivedAt"),
+        "createdAt": _ddb_str(item, "createdAt"),
+        "submissionId": _ddb_str(item, "submissionId"),
+        "meta": _ddb_json(item, "metaJson") or {},
+    }
+
+
+def _jmap_contacts_table_name(refs: dict[str, Any]) -> str:
+    return str(_jmap_contacts_ref_from_refs(refs).get("tableName") or "").strip()
+
+
+def _jmap_mail_table_name(refs: dict[str, Any]) -> str:
+    return str(_jmap_mail_ref_from_refs(refs).get("tableName") or "").strip()
+
+
+def _directory_profile_table(refs: dict[str, Any]) -> tuple[str, str]:
+    directory = _directory_ref_from_refs(refs)
+    return (
+        str(directory.get("profileTableName") or "").strip(),
+        str(directory.get("profileAgentIdIndex") or "").strip() or "agentId-index",
+    )
+
+
+def _require_string_list(raw: Any, *, label: str) -> list[str]:
+    if not isinstance(raw, list):
+        raise UsageError(f"{label} must be a list")
+    out = [str(v or "").strip() for v in raw]
+    out = [v for v in out if v]
+    if not out:
+        raise UsageError(f"{label} must contain at least one value")
+    return out
+
+
+def _profile_lookup_by_agent_id(*, ddb: Any, profile_table_name: str, profile_agent_id_index: str, agent_id: str) -> dict[str, str]:
+    try:
+        out = ddb.query(
+            TableName=profile_table_name,
+            IndexName=profile_agent_id_index,
+            KeyConditionExpression="agentId = :agentId",
+            ExpressionAttributeValues={":agentId": {"S": agent_id}},
+            Limit=5,
+        )
+    except Exception as e:
+        raise OpError(f"dynamodb query failed resolving agent profile: {e}") from e
+    for item in out.get("Items") or []:
+        if not isinstance(item, dict):
+            continue
+        if not _ddb_bool(item, "enabled", default=False):
+            continue
+        sub = _ddb_str(item, "sub")
+        username = _ddb_str(item, "agentId")
+        if sub and username:
+            return {"sub": sub, "agentId": username}
+    raise UsageError(f"unknown enabled agent profile for agentId={agent_id!r}")
+
+
+def cmd_jmap_contacts_get(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_contacts_table_name(refs)
+    if not table_name:
+        raise UsageError("missing jmap contacts table name in credentials references")
+    ids = _require_string_list(args.ids, label="ids")
+    ddb = sess.client("dynamodb")
+    contacts: list[dict[str, Any]] = []
+    not_found: list[str] = []
+    for contact_id in ids:
+        try:
+            out = ddb.get_item(
+                TableName=table_name,
+                Key={"ownerSub": {"S": owner_sub}, "contactId": {"S": contact_id}},
+                ConsistentRead=True,
+            )
+        except Exception as e:
+            raise OpError(f"dynamodb get-item failed: {e}") from e
+        item = out.get("Item")
+        if isinstance(item, dict):
+            contacts.append(_ddb_item_contact_to_json(item))
+        else:
+            not_found.append(contact_id)
+    _print_json(
+        {
+            "kind": "enabler.jmap.contacts.get.v1",
+            "list": contacts,
+            "notFound": not_found,
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_contacts_query(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_contacts_table_name(refs)
+    if not table_name:
+        raise UsageError("missing jmap contacts table name in credentials references")
+    text = str(args.text or "").strip().lower()
+    ddb = sess.client("dynamodb")
+    try:
+        out = ddb.query(
+            TableName=table_name,
+            KeyConditionExpression="ownerSub = :ownerSub",
+            ExpressionAttributeValues={":ownerSub": {"S": owner_sub}},
+            ConsistentRead=True,
+        )
+    except Exception as e:
+        raise OpError(f"dynamodb query failed: {e}") from e
+    contacts = [
+        _ddb_item_contact_to_json(item)
+        for item in (out.get("Items") or [])
+        if isinstance(item, dict)
+    ]
+    if text:
+        contacts = [
+            item
+            for item in contacts
+            if text in str(item.get("name") or "").lower()
+            or text in str(item.get("targetAgentId") or "").lower()
+            or text in str(item.get("description") or "").lower()
+        ]
+    contacts.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("contactId") or "")))
+    _print_json(
+        {
+            "kind": "enabler.jmap.contacts.query.v1",
+            "list": contacts,
+            "queryState": str(len(contacts)),
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_contacts_set(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_contacts_table_name(refs)
+    profile_table_name, profile_agent_id_index = _directory_profile_table(refs)
+    if not table_name or not profile_table_name:
+        raise UsageError("missing jmap contacts or directory table references in credentials")
+    target_agent_id = str(args.target_agent_id or "").strip()
+    name = str(args.name or "").strip()
+    if not target_agent_id or not name:
+        raise UsageError("contact_set requires name and targetAgentId")
+    description = str(args.description or "").strip()
+    contact_id = str(args.contact_id or "").strip() or uuid4_base58_22()
+    now = datetime.now(timezone.utc).isoformat()
+    ddb = sess.client("dynamodb")
+    target = _profile_lookup_by_agent_id(
+        ddb=ddb,
+        profile_table_name=profile_table_name,
+        profile_agent_id_index=profile_agent_id_index,
+        agent_id=target_agent_id,
+    )
+    item = {
+        "ownerSub": {"S": owner_sub},
+        "contactId": {"S": contact_id},
+        "name": {"S": name},
+        "targetAgentId": {"S": target["agentId"]},
+        "targetSub": {"S": target["sub"]},
+        "updatedAt": {"S": now},
+    }
+    if description:
+        item["description"] = {"S": description}
+    try:
+        ddb.put_item(TableName=table_name, Item=item)
+    except Exception as e:
+        raise OpError(f"dynamodb put-item failed: {e}") from e
+    _print_json(
+        {
+            "kind": "enabler.jmap.contacts.set.v1",
+            "created": {
+                contact_id: _ddb_item_contact_to_json(item),
+            },
+            "updated": [],
+            "destroyed": [],
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_mailbox_get(args: argparse.Namespace, g: GlobalOpts) -> int:
+    del args
+    root_doc = _resolve_runtime_credentials_doc(argparse.Namespace(), g)
+    owner_sub, owner_agent_id = _jmap_identity(root_doc)
+    _print_json(
+        {
+            "kind": "enabler.jmap.mailbox.get.v1",
+            "list": [
+                {
+                    "id": "inbox",
+                    "name": "Inbox",
+                    "role": "inbox",
+                    "sortOrder": 10,
+                    "isSubscribed": True,
+                    "myRights": {"mayReadItems": True, "maySetSeen": True, "mayCreateChild": False},
+                    "owner": {"sub": owner_sub, "agentId": owner_agent_id},
+                }
+            ],
+            "notFound": [],
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_mail_get(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_mail_table_name(refs)
+    if not table_name:
+        raise UsageError("missing jmap mail table name in credentials references")
+    ids = _require_string_list(args.ids, label="ids")
+    ddb = sess.client("dynamodb")
+    emails: list[dict[str, Any]] = []
+    not_found: list[str] = []
+    for email_id in ids:
+        try:
+            out = ddb.get_item(
+                TableName=table_name,
+                Key={"ownerSub": {"S": owner_sub}, "emailId": {"S": email_id}},
+                ConsistentRead=True,
+            )
+        except Exception as e:
+            raise OpError(f"dynamodb get-item failed: {e}") from e
+        item = out.get("Item")
+        if isinstance(item, dict):
+            emails.append(_ddb_item_email_to_json(item))
+        else:
+            not_found.append(email_id)
+    _print_json(
+        {
+            "kind": "enabler.jmap.mail.get.v1",
+            "list": emails,
+            "notFound": not_found,
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_mail_query(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_mail_table_name(refs)
+    if not table_name:
+        raise UsageError("missing jmap mail table name in credentials references")
+    mailbox_id = str(args.mailbox_id or "inbox").strip() or "inbox"
+    text = str(args.text or "").strip().lower()
+    unread_only = bool(args.unread_only)
+    ddb = sess.client("dynamodb")
+    try:
+        out = ddb.query(
+            TableName=table_name,
+            KeyConditionExpression="ownerSub = :ownerSub",
+            ExpressionAttributeValues={":ownerSub": {"S": owner_sub}},
+            ConsistentRead=True,
+        )
+    except Exception as e:
+        raise OpError(f"dynamodb query failed: {e}") from e
+    emails = [
+        _ddb_item_email_to_json(item)
+        for item in (out.get("Items") or [])
+        if isinstance(item, dict)
+    ]
+    emails = [
+        item
+        for item in emails
+        if mailbox_id in (item.get("mailboxIds") or [])
+    ]
+    if unread_only:
+        emails = [item for item in emails if bool(item.get("isUnread"))]
+    if text:
+        emails = [
+            item
+            for item in emails
+            if text in str(item.get("subject") or "").lower()
+            or text in str(item.get("body") or "").lower()
+            or text in str(((item.get("from") or {}).get("agentId")) or "").lower()
+        ]
+    emails.sort(key=lambda item: str(item.get("receivedAt") or ""), reverse=True)
+    ids = [str(item.get("emailId") or "") for item in emails if str(item.get("emailId") or "")]
+    _print_json(
+        {
+            "kind": "enabler.jmap.mail.query.v1",
+            "mailboxId": mailbox_id,
+            "queryState": str(len(ids)),
+            "ids": ids,
+            "list": emails,
+            "canCalculateChanges": False,
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_mail_set(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    owner_sub, _owner_agent_id = _jmap_identity(root_doc)
+    table_name = _jmap_mail_table_name(refs)
+    if not table_name:
+        raise UsageError("missing jmap mail table name in credentials references")
+    email_id = str(args.email_id or "").strip()
+    if not email_id:
+        raise UsageError("email_set requires emailId")
+    set_parts: list[str] = []
+    remove_parts: list[str] = []
+    values: dict[str, Any] = {}
+    names: dict[str, str] = {}
+    if args.is_unread is not None:
+        names["#isUnread"] = "isUnread"
+        values[":isUnread"] = {"BOOL": bool(args.is_unread)}
+        set_parts.append("#isUnread = :isUnread")
+    keywords = args.keywords if isinstance(args.keywords, list) else None
+    if keywords is not None:
+        cleaned = sorted({str(v or "").strip() for v in keywords if str(v or "").strip()})
+        names["#keywords"] = "keywords"
+        if cleaned:
+            values[":keywords"] = {"SS": cleaned}
+            set_parts.append("#keywords = :keywords")
+        else:
+            remove_parts.append("#keywords")
+    if not set_parts and not remove_parts:
+        raise UsageError("email_set requires isUnread and/or keywords")
+    update_expr_parts: list[str] = []
+    if set_parts:
+        update_expr_parts.append("SET " + ", ".join(set_parts))
+    if remove_parts:
+        update_expr_parts.append("REMOVE " + ", ".join(remove_parts))
+    ddb = sess.client("dynamodb")
+    update_kwargs = {
+        "TableName": table_name,
+        "Key": {"ownerSub": {"S": owner_sub}, "emailId": {"S": email_id}},
+        "UpdateExpression": " ".join(update_expr_parts),
+        "ExpressionAttributeNames": names,
+        "ConditionExpression": "attribute_exists(ownerSub) AND attribute_exists(emailId)",
+        "ReturnValues": "ALL_NEW",
+    }
+    if values:
+        update_kwargs["ExpressionAttributeValues"] = values
+    try:
+        out = ddb.update_item(**update_kwargs)
+    except Exception as e:
+        raise OpError(f"dynamodb update-item failed: {e}") from e
+    item = out.get("Attributes")
+    if not isinstance(item, dict):
+        raise OpError("updated mail item missing from response")
+    payload = _ddb_item_email_to_json(item)
+    _print_json(
+        {
+            "kind": "enabler.jmap.mail.set.v1",
+            "updated": {email_id: payload},
+            "notUpdated": {},
+        },
+        pretty=g.pretty,
+    )
+    return 0
+
+
+def cmd_jmap_mail_submission_set(args: argparse.Namespace, g: GlobalOpts) -> int:
+    _require_boto3()
+    root_doc = _resolve_runtime_credentials_doc(args, g)
+    active_doc = _select_runtime_agent_doc(root_doc)
+    sess, refs, _region = _issued_session_from_doc(doc=active_doc)
+    sender_sub, sender_agent_id = _jmap_identity(root_doc)
+    mail_table_name = _jmap_mail_table_name(refs)
+    contacts_table_name = _jmap_contacts_table_name(refs)
+    profile_table_name, profile_agent_id_index = _directory_profile_table(refs)
+    if not mail_table_name or not profile_table_name:
+        raise UsageError("missing jmap mail or directory table references in credentials")
+    subject = str(args.subject or "").strip()
+    body = str(args.body or "").strip()
+    if not body:
+        raise UsageError("emailsubmission_set requires body")
+    to_agent_ids = [str(v or "").strip() for v in (args.to_agent_ids or []) if str(v or "").strip()]
+    to_contact_ids = [str(v or "").strip() for v in (args.to_contact_ids or []) if str(v or "").strip()]
+    if not to_agent_ids and not to_contact_ids:
+        raise UsageError("emailsubmission_set requires toAgentIds and/or toContactIds")
+    ddb = sess.client("dynamodb")
+    recipients: list[dict[str, str]] = []
+    for agent_id in to_agent_ids:
+        recipients.append(
+            _profile_lookup_by_agent_id(
+                ddb=ddb,
+                profile_table_name=profile_table_name,
+                profile_agent_id_index=profile_agent_id_index,
+                agent_id=agent_id,
+            )
+        )
+    if to_contact_ids:
+        if not contacts_table_name:
+            raise UsageError("missing jmap contacts table name in credentials references")
+        for contact_id in to_contact_ids:
+            out = ddb.get_item(
+                TableName=contacts_table_name,
+                Key={"ownerSub": {"S": sender_sub}, "contactId": {"S": contact_id}},
+                ConsistentRead=True,
+            )
+            item = out.get("Item")
+            if not isinstance(item, dict):
+                raise UsageError(f"unknown contactId: {contact_id}")
+            target_sub = _ddb_str(item, "targetSub")
+            target_agent_id = _ddb_str(item, "targetAgentId")
+            if not target_sub or not target_agent_id:
+                raise UsageError(f"contact missing target routing metadata: {contact_id}")
+            recipients.append({"sub": target_sub, "agentId": target_agent_id})
+    deduped: list[dict[str, str]] = []
+    seen_recipients: set[tuple[str, str]] = set()
+    for recipient in recipients:
+        key = (recipient["sub"], recipient["agentId"])
+        if key in seen_recipients:
+            continue
+        seen_recipients.add(key)
+        deduped.append(recipient)
+    thread_id = uuid4_base58_22()
+    submission_id = uuid4_base58_22()
+    created: dict[str, Any] = {}
+    now = datetime.now(timezone.utc).isoformat()
+    preview = body[:80]
+    meta_json = args.meta_json
+    meta_payload = _parse_json_arg(meta_json, label="meta JSON") if meta_json else {}
+    if meta_payload is not None and not isinstance(meta_payload, dict):
+        raise UsageError("meta JSON must be an object")
+    for recipient in deduped:
+        email_id = uuid4_base58_22()
+        item = {
+            "ownerSub": {"S": recipient["sub"]},
+            "emailId": {"S": email_id},
+            "threadId": {"S": thread_id},
+            "mailboxIds": {"SS": ["inbox"]},
+            "fromAgentId": {"S": sender_agent_id},
+            "fromSub": {"S": sender_sub},
+            "toAgentId": {"S": recipient["agentId"]},
+            "toSub": {"S": recipient["sub"]},
+            "subject": {"S": subject},
+            "body": {"S": body},
+            "preview": {"S": preview},
+            "keywords": {"SS": ["$unread"]},
+            "isUnread": {"BOOL": True},
+            "receivedAt": {"S": now},
+            "createdAt": {"S": now},
+            "submissionId": {"S": submission_id},
+            "metaJson": {"S": json.dumps(meta_payload or {}, separators=(",", ":"), sort_keys=True)},
+        }
+        try:
+            ddb.put_item(TableName=mail_table_name, Item=item)
+        except Exception as e:
+            raise OpError(f"dynamodb put-item failed: {e}") from e
+        created[email_id] = _ddb_item_email_to_json(item)
+    _print_json(
+        {
+            "kind": "enabler.jmap.mail.submission.set.v1",
+            "submissionId": submission_id,
+            "threadId": thread_id,
+            "created": created,
+            "notCreated": {},
+        },
+        pretty=g.pretty,
+    )
+    return 0
 
 
 def cmd_messages_send(args: argparse.Namespace, g: GlobalOpts) -> int:
@@ -2685,7 +3268,18 @@ handoff_admin_app = typer.Typer(
     help="Bootstrap handoff helpers",
     no_args_is_help=True,
 )
-messages_app = typer.Typer(help="Message helpers (issued STS creds, no profile)", no_args_is_help=True)
+eventbus_app = typer.Typer(
+    help="EventBridge/SQS event transport helpers (issued STS creds, no profile)",
+    no_args_is_help=True,
+)
+jmap_contacts_app = typer.Typer(
+    help="JMAP contacts helpers (issued STS creds, no profile)",
+    no_args_is_help=True,
+)
+jmap_mail_app = typer.Typer(
+    help="JMAP mail helpers (issued STS creds, no profile)",
+    no_args_is_help=True,
+)
 fileshare_app = typer.Typer(help="Fileshare helpers (file and folder upload)", no_args_is_help=True)
 shortlinks_app = typer.Typer(help="Shortlink helpers", no_args_is_help=True)
 taskboard_app = typer.Typer(
@@ -2695,7 +3289,9 @@ taskboard_app = typer.Typer(
 
 # Agent CLI surface.
 app.add_typer(fileshare_app, name="fileshare")
-app.add_typer(messages_app, name="messages")
+app.add_typer(eventbus_app, name="eventbus")
+app.add_typer(jmap_contacts_app, name="jmap-contacts")
+app.add_typer(jmap_mail_app, name="jmap-mail")
 app.add_typer(shortlinks_app, name="shortlinks")
 app.add_typer(taskboard_app, name="taskboard")
 
@@ -3240,8 +3836,8 @@ def fileshare_folder(
     _invoke_from_locals(ctx, cmd_share_folder, locals())
 
 
-@messages_app.command("send", help="Send a direct message event via EventBridge.")
-def messages_send(
+@eventbus_app.command("send", help="Send a direct event payload via EventBridge.")
+def eventbus_send(
     ctx: typer.Context,
     to: str = typer.Option(..., "--to", help="Target recipient Cognito username"),
     text: str | None = typer.Option(None, "--text", help='Plain text message body (wrapped as {"text": ...})'),
@@ -3262,8 +3858,8 @@ def messages_send(
     )
 
 
-@messages_app.command("recv", help="Receive direct message events from the inbox SQS queue (loops batches until empty for this run).")
-def messages_recv(
+@eventbus_app.command("recv", help="Receive event payloads from the inbox SQS queue (loops batches until empty for this run).")
+def eventbus_recv(
     ctx: typer.Context,
     queue_url: str | None = typer.Option(None, "--queue-url", help="Override inbox queue URL"),
     max_number: str = typer.Option("1", "--max-number", help="Max messages (1-10, default: 1)"),
@@ -3286,10 +3882,10 @@ def messages_recv(
     )
 
 
-@messages_app.command("ack", help="Acknowledge/delete a previously received inbox message.")
-def messages_ack(
+@eventbus_app.command("ack", help="Acknowledge/delete a previously received inbox event.")
+def eventbus_ack(
     ctx: typer.Context,
-    ack_token: str | None = typer.Option(None, "--ack-token", help="Ack token emitted by 'messages recv'"),
+    ack_token: str | None = typer.Option(None, "--ack-token", help="Ack token emitted by 'eventbus recv'"),
     receipt_handle: str | None = typer.Option(None, "--receipt-handle", help="Raw SQS receipt handle"),
     queue_url: str | None = typer.Option(None, "--queue-url", help="Override inbox queue URL when using --receipt-handle"),
 ) -> None:
@@ -3300,6 +3896,78 @@ def messages_ack(
         receipt_handle=receipt_handle,
         queue_url=queue_url,
     )
+
+
+@jmap_contacts_app.command("get", help="Get one or more contacts by id.")
+def jmap_contacts_get(
+    ctx: typer.Context,
+    ids: list[str] = typer.Argument(..., help="One or more contact ids"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_contacts_get, locals())
+
+
+@jmap_contacts_app.command("query", help="List contacts for the current agent.")
+def jmap_contacts_query(
+    ctx: typer.Context,
+    text: str | None = typer.Option(None, "--text", help="Optional substring filter"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_contacts_query, locals())
+
+
+@jmap_contacts_app.command("set", help="Create or replace one contact.")
+def jmap_contacts_set(
+    ctx: typer.Context,
+    name: str = typer.Option(..., "--name", help="Contact display name"),
+    target_agent_id: str = typer.Option(..., "--target-agent-id", help="Target agent id / username"),
+    contact_id: str | None = typer.Option(None, "--contact-id", help="Existing contact id to replace"),
+    description: str | None = typer.Option(None, "--description", help="Optional contact description"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_contacts_set, locals())
+
+
+@jmap_mail_app.command("mailbox-get", help="Get the current agent mailbox list.")
+def jmap_mailbox_get(ctx: typer.Context) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_mailbox_get, locals())
+
+
+@jmap_mail_app.command("email-get", help="Get one or more emails by id.")
+def jmap_mail_get(
+    ctx: typer.Context,
+    ids: list[str] = typer.Argument(..., help="One or more email ids"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_mail_get, locals())
+
+
+@jmap_mail_app.command("email-query", help="Query email in the current mailbox.")
+def jmap_mail_query(
+    ctx: typer.Context,
+    mailbox_id: str = typer.Option("inbox", "--mailbox-id", help="Mailbox id (default: inbox)"),
+    text: str | None = typer.Option(None, "--text", help="Optional substring filter"),
+    unread_only: bool = typer.Option(False, "--unread-only", help="Return only unread mail"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_mail_query, locals())
+
+
+@jmap_mail_app.command("email-set", help="Update durable state on one email.")
+def jmap_mail_set(
+    ctx: typer.Context,
+    email_id: str = typer.Option(..., "--email-id", help="Email id"),
+    is_unread: bool | None = typer.Option(None, "--is-unread/--no-is-unread", help="Set unread state"),
+    keywords: list[str] | None = typer.Option(None, "--keyword", help="Replace keywords with the provided set"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_mail_set, locals())
+
+
+@jmap_mail_app.command("emailsubmission-set", help="Submit agent mail to one or more recipients.")
+def jmap_mail_submission_set(
+    ctx: typer.Context,
+    subject: str | None = typer.Option(None, "--subject", help="Optional subject"),
+    body: str = typer.Option(..., "--body", help="Mail body"),
+    to_agent_ids: list[str] = typer.Option([], "--to-agent-id", help="Target agent id / username"),
+    to_contact_ids: list[str] = typer.Option([], "--to-contact-id", help="Target saved contact id"),
+    meta_json: str | None = typer.Option(None, "--meta-json", help="Optional JSON metadata object"),
+) -> None:
+    _invoke_from_locals(ctx, cmd_jmap_mail_submission_set, locals())
 
 
 @shortlinks_app.command("create", help="Create a short link code for a target URL.")

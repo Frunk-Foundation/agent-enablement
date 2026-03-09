@@ -17,7 +17,7 @@ This repository now uses a credentials + MCP runtime model:
 
 ### Runtime
 - `./enabler-creds`: `summary`, `status`, `paths`, `refresh`, `credential-process`
-- `./enabler-mcp`: MCP stdio server for taskboard/messages/fileshare/shortlinks
+- `./enabler-mcp`: MCP stdio server for taskboard/eventbus/jmap-mail/jmap-contacts/fileshare/shortlinks
 - `./enabler-mcp-cli`: thin local MCP client (`list`, `inspect`, `call`, `result`, `raw`)
 - `./enabler`: retired shim
 
@@ -33,7 +33,7 @@ Contains issued STS credentials and runtime references, including:
 - `cognitoTokens`
 - `grants`
 - `constraints`
-- `references` (messages, s3, ssmKeys, provisioning, taskboard, shortlinks, files)
+- `references` (eventbus, jmapMail, jmapContacts, directory, s3, ssmKeys, provisioning, taskboard, shortlinks, files)
 
 ### Additional credential artifacts
 - `.enabler/sts.env`
@@ -66,3 +66,5 @@ just test
 - MCP has a built-in discovery path now: call top-level `help` or any `*.exec` with `action=help`; in unbound mode, help still works so bootstrap guidance is always available.
 - After credentials schema changes deploy, run `credentials.exec` with `action=ensure` and `args.forceRefresh=true` to pull new fields immediately instead of waiting for expiry-driven refresh.
 - Runtime SSM access is available via `ssm.exec` (`paths|list|get`); returned values are plaintext secret material and must not be echoed into logs or transcripts.
+- Agent mail now goes through `jmap-mail.exec`; the old EventBridge/SQS inbox flow is rebranded as `eventbus.exec` and is not the mail interface.
+- MCP runtime context falls back to `ENABLER_COGNITO_USERNAME` when `ENABLER_AGENT_ID` is unset, so tests or unbound startup checks must clear both env vars if they intend to exercise true unbound behavior.

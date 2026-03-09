@@ -19,6 +19,9 @@ _ddb_client = None
 _cognito_client = None
 
 PROFILE_TABLE_NAME = os.environ.get("PROFILE_TABLE_NAME", "")
+PROFILE_AGENT_ID_INDEX = os.environ.get("PROFILE_AGENT_ID_INDEX", "agentId-index")
+CONTACTS_TABLE_NAME = os.environ.get("CONTACTS_TABLE_NAME", "")
+MAIL_TABLE_NAME = os.environ.get("MAIL_TABLE_NAME", "")
 DELEGATION_REQUESTS_TABLE_NAME = os.environ.get("DELEGATION_REQUESTS_TABLE_NAME", "")
 ASSUME_ROLE_RUNTIME_ARN = os.environ.get("ASSUME_ROLE_RUNTIME_ARN", "")
 ASSUME_ROLE_PROVISIONING_ARN = os.environ.get("ASSUME_ROLE_PROVISIONING_ARN", "")
@@ -71,7 +74,7 @@ API_KEY_SSM_PARAMETER_NAME = os.environ.get("API_KEY_SSM_PARAMETER_NAME", "")
 SSM_KEYS_STAGE = os.environ.get("SSM_KEYS_STAGE", "")
 API_REQUIRED_HEADERS = os.environ.get("API_REQUIRED_HEADERS", "x-api-key,authorization")
 STACK_NAME_PATTERN_TEMPLATE = "agent-${aws:PrincipalTag/sub}-*"
-_DELEGATION_ALLOWED_SCOPES = {"taskboard", "messages", "files", "shortlinks"}
+_DELEGATION_ALLOWED_SCOPES = {"taskboard", "eventbus", "messages", "files", "shortlinks"}
 
 
 def _arn_account_id(arn: str) -> str:
@@ -298,10 +301,12 @@ def _delegation_scopes(payload: dict[str, Any]) -> list[str]:
     if isinstance(raw, list):
         for val in raw:
             scope = str(val or "").strip().lower()
+            if scope == "messages":
+                scope = "eventbus"
             if scope in _DELEGATION_ALLOWED_SCOPES and scope not in scopes:
                 scopes.append(scope)
     if not scopes:
-        scopes = ["taskboard", "messages"]
+        scopes = ["taskboard", "eventbus"]
     return scopes
 
 
@@ -1406,6 +1411,33 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                         "resources": [bus_arn],
                     }
                 )
+            dynamodb_resources: list[str] = []
+            if CONTACTS_TABLE_NAME:
+                dynamodb_resources.append(
+                    f"arn:aws:dynamodb:{_aws_region()}:{_arn_account_id(assume_role_arn)}:table/{CONTACTS_TABLE_NAME}"
+                )
+            if MAIL_TABLE_NAME:
+                dynamodb_resources.append(
+                    f"arn:aws:dynamodb:{_aws_region()}:{_arn_account_id(assume_role_arn)}:table/{MAIL_TABLE_NAME}"
+                )
+            if PROFILE_TABLE_NAME:
+                dynamodb_resources.append(
+                    f"arn:aws:dynamodb:{_aws_region()}:{_arn_account_id(assume_role_arn)}:table/{PROFILE_TABLE_NAME}/index/{PROFILE_AGENT_ID_INDEX}"
+                )
+            if dynamodb_resources:
+                grants.append(
+                    {
+                        "service": "dynamodb",
+                        "actions": [
+                            "dynamodb:GetItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:UpdateItem",
+                            "dynamodb:Query",
+                        ],
+                        "resources": dynamodb_resources,
+                        "instructions": "Use references.jmapContacts, references.jmapMail, and references.directory for durable contact/mail state.",
+                    }
+                )
             grants.append(
                 {
                     "service": "execute-api",
@@ -1539,7 +1571,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 "eventBusArn": bus_arn,
                 "eventBusName": _parse_event_bus_name_from_arn(bus_arn),
             },
-            "messages": {
+            "eventbus": {
                 "agentId": agent_id,
                 "groups": groups,
                 "eventBusArn": bus_arn,
@@ -1557,6 +1589,22 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                     "detailType": "agent.message.v2",
                     "toUsernameField": "toUsername",
                 },
+                "docs": docs,
+            },
+            "directory": {
+                "profileTableName": PROFILE_TABLE_NAME,
+                "profileAgentIdIndex": PROFILE_AGENT_ID_INDEX,
+                "docs": docs,
+            },
+            "jmapContacts": {
+                "tableName": CONTACTS_TABLE_NAME,
+                "defaultKind": "contact",
+                "docs": docs,
+            },
+            "jmapMail": {
+                "tableName": MAIL_TABLE_NAME,
+                "defaultMailboxId": "inbox",
+                "submissionAction": "emailsubmission_set",
                 "docs": docs,
             },
         }

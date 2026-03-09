@@ -71,6 +71,8 @@ def test_outputs_include_split_role_and_boundary_arns(monkeypatch):
     assert "CfnExecutionRoleArn" in outputs
     assert "AgentWorkloadBoundaryArn" in outputs
     assert "AgentGroupMembersTableName" in outputs
+    assert "ContactsTableName" in outputs
+    assert "MailTableName" in outputs
     assert "TaskboardInvokeUrl" in outputs
     assert "TaskboardTasksTableName" in outputs
     assert "TaskboardAuditTableName" in outputs
@@ -97,6 +99,9 @@ def test_credentials_handler_uses_explicit_scope_role_env_vars(monkeypatch):
     assert "DELEGATION_REDEEM_PATH" in env_vars
     assert "DELEGATION_STATUS_PATH" in env_vars
     assert "DELEGATION_REQUESTS_TABLE_NAME" in env_vars
+    assert "PROFILE_AGENT_ID_INDEX" in env_vars
+    assert "CONTACTS_TABLE_NAME" in env_vars
+    assert "MAIL_TABLE_NAME" in env_vars
     assert "USER_POOL_ID" in env_vars
     assert "ASSUME_ROLE_ARN" not in env_vars
 

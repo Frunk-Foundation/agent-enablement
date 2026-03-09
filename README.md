@@ -3,7 +3,7 @@
 This repo provides an agent-first runtime flow with split credential and MCP surfaces:
 
 - `./enabler-creds`: credential lifecycle (`summary`, `status`, `paths`, `refresh`, `credential-process`)
-- `./enabler-mcp`: agent MCP server (taskboard/messages/fileshare/shortlinks + credential visibility)
+- `./enabler-mcp`: agent MCP server (taskboard/eventbus/jmap-mail/jmap-contacts/fileshare/shortlinks + credential visibility)
 - `./enabler-mcp-cli`: thin local MCP client (`list`, `inspect`, `call`, `result`, `raw`)
 - `./enabler-admin`: admin/control-plane workflow (`stack-output`, `ssm`, `cognito`, `agent`)
 - `./enabler`: retired; prints migration guidance and exits non-zero
@@ -173,8 +173,8 @@ Help examples:
 
 ```json
 {"method":"tools/call","params":{"name":"help","arguments":{}}}
-{"method":"tools/call","params":{"name":"help","arguments":{"tool":"messages.exec"}}}
-{"method":"tools/call","params":{"name":"messages.exec","arguments":{"action":"help","args":{"action":"recv"}}}}
+{"method":"tools/call","params":{"name":"help","arguments":{"tool":"jmap-mail.exec"}}}
+{"method":"tools/call","params":{"name":"jmap-mail.exec","arguments":{"action":"help","args":{"action":"email_query"}}}}
 ```
 
 ## MCP Startup Troubleshooting
@@ -213,7 +213,9 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
   - `credentials.exec` (`action=help|ensure|list_sessions|set_agentid|delegation_request|delegation_approve|delegation_redeem|delegation_status`)
   - `ssm.exec` (`action=help|paths|list|get`)
   - `taskboard.exec` (`action=help|create|add|list|claim|unclaim|done|fail|status|audit|my_activity`)
-  - `messages.exec` (`action=help|send|recv|ack`)
+  - `eventbus.exec` (`action=help|send|recv|ack`)
+  - `jmap-contacts.exec` (`action=help|contact_get|contact_query|contact_set`)
+  - `jmap-mail.exec` (`action=help|mailbox_get|email_get|email_query|email_set|emailsubmission_set`)
   - `fileshare.exec` (`action=help|file|folder`)
   - `ops.result` (for async polling when `async=true`)
 
