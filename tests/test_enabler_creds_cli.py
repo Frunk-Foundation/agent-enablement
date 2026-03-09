@@ -320,3 +320,100 @@ def test_session_list_and_revoke(tmp_path: Path, monkeypatch) -> None:
     assert revoke_payload["removed"] is True
     assert revoke_payload["principalSub"] == "sub-agent-list"
     assert not Path(revoke_payload["sessionPath"]).exists()
+
+
+def test_session_import_from_file_writes_managed_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    source = tmp_path / "bundle.json"
+    exp = "2099-01-01T00:00:00+00:00"
+    source.write_text(
+        json.dumps(
+            {
+                "kind": "agent-enablement.credentials.v2",
+                "expiresAt": exp,
+                "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
+                "principal": {"sub": "sub-import-1", "username": "agent-import"},
+                "session": {
+                    "sessionKey": "sub-import-1",
+                    "principalSub": "sub-import-1",
+                    "agentId": "agent-import",
+                    "authMode": "admin-bootstrap",
+                    "renewalMode": "refresh-token-only",
+                },
+                "credentialSets": {
+                    "agentEnablement": {
+                        "credentials": {
+                            "accessKeyId": "ASIAIMPORT",
+                            "secretAccessKey": "secret",
+                            "sessionToken": "token",
+                            "expiration": exp,
+                        },
+                        "references": {"awsRegion": "us-east-2"},
+                    }
+                },
+                "cognitoTokens": {
+                    "idToken": "a.b.c",
+                    "accessToken": "d.e.f",
+                    "refreshToken": "refresh",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["session", "import", "--file", str(source)])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.stdout)
+    assert parsed["kind"] == "enabler.session.import.v1"
+    assert parsed["cachePath"].endswith("/sessions/sub-import-1/session.json")
+    assert Path(parsed["cachePath"]).exists()
+    manifest = parsed["manifest"]
+    assert manifest["exists"]["credentialsJson"] is True
+    assert manifest["exists"]["cognitoEnv"] is True
+
+
+def test_session_import_from_stdin_reads_bundle_without_agent_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLER_AGENT_ID", raising=False)
+    monkeypatch.delenv("ENABLER_CREDS_CACHE", raising=False)
+    monkeypatch.setenv("ENABLER_SESSION_ROOT", str(tmp_path))
+    exp = "2099-01-01T00:00:00+00:00"
+    payload = json.dumps(
+        {
+            "kind": "agent-enablement.credentials.v2",
+            "expiresAt": exp,
+            "auth": {"credentialsEndpoint": "https://api.example.com/prod/v1/credentials"},
+            "principal": {"sub": "sub-import-stdin", "username": "agent-stdin"},
+            "session": {
+                "sessionKey": "sub-import-stdin",
+                "principalSub": "sub-import-stdin",
+                "agentId": "agent-stdin",
+                "authMode": "admin-bootstrap",
+                "renewalMode": "refresh-token-only",
+            },
+            "credentialSets": {
+                "agentEnablement": {
+                    "credentials": {
+                        "accessKeyId": "ASIASTDIN",
+                        "secretAccessKey": "secret",
+                        "sessionToken": "token",
+                        "expiration": exp,
+                    },
+                    "references": {"awsRegion": "us-east-2"},
+                }
+            },
+            "cognitoTokens": {
+                "idToken": "a.b.c",
+                "accessToken": "d.e.f",
+                "refreshToken": "refresh",
+            },
+        }
+    )
+
+    result = runner.invoke(app, ["session", "import"], input=payload)
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.stdout)
+    assert parsed["cachePath"].endswith("/sessions/sub-import-stdin/session.json")

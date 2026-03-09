@@ -23,12 +23,8 @@ from rich.console import Console
 from .. import __version__
 from .. import auth_inputs
 from ..admin_commands import (
+    build_admin_context,
     cmd_agent_decommission,
-    _parse_stage_from_api_key_param_name,
-    _ssm_key_name_agent,
-    _ssm_key_name_shared,
-    cmd_agent_handoff_create,
-    cmd_agent_handoff_print_env,
     cmd_agent_onboard,
     cmd_agent_seed_profile,
     cmd_cognito_create_user,
@@ -43,6 +39,10 @@ from ..admin_commands import (
     cmd_ssm_key_put_agent,
     cmd_ssm_key_put_shared,
     cmd_stack_output,
+    _parse_stage_from_api_key_param_name,
+    _ssm_get_value,
+    _ssm_key_name_agent,
+    _ssm_key_name_shared,
 )
 from ..agent_commands import event_bus_name_from_arn
 from ..cli_shared import ENABLER_ADMIN_COGNITO_PASSWORD
@@ -3488,8 +3488,8 @@ agent_admin_app = typer.Typer(
     help="Agent admin helpers (onboarding, profile seeding)",
     no_args_is_help=True,
 )
-handoff_admin_app = typer.Typer(
-    help="Bootstrap handoff helpers",
+bootstrap_admin_app = typer.Typer(
+    help="Seeded session bootstrap helpers",
     no_args_is_help=True,
 )
 eventbus_app = typer.Typer(
@@ -3523,7 +3523,7 @@ app.add_typer(taskboard_app, name="taskboard")
 admin_app.add_typer(ssm_app, name="ssm")
 admin_app.add_typer(cognito_app, name="cognito")
 admin_app.add_typer(agent_admin_app, name="agent")
-agent_admin_app.add_typer(handoff_admin_app, name="handoff")
+agent_admin_app.add_typer(bootstrap_admin_app, name="bootstrap")
 
 
 @app.callback()
@@ -3943,11 +3943,109 @@ def agent_decommission(
     )
 
 
-@handoff_admin_app.command("create", help="Create a bootstrap handoff JSON document for an agent.")
-def agent_handoff_create(
+def _admin_credentials_endpoint(*, g: GlobalOpts, endpoint: str | None) -> str:
+    resolved = str(endpoint or "").strip()
+    if resolved:
+        return resolved
+    ctx = build_admin_context(g)
+    resolved = str(ctx.require_output("CredentialsInvokeUrl") or "").strip()
+    if not resolved:
+        raise OpError("missing credentials endpoint")
+    return resolved
+
+
+def _admin_api_key(*, g: GlobalOpts, api_key: str | None, api_key_ssm_name: str | None) -> str:
+    resolved = str(api_key or "").strip()
+    if resolved:
+        return resolved
+    ctx = build_admin_context(g)
+    param_name = ctx.resolve_api_key_param_name(api_key_ssm_name)
+    resolved = _ssm_get_value(ctx.session, name=param_name)
+    if not resolved:
+        raise OpError("failed to resolve API key")
+    return resolved
+
+
+def _request_seeded_session_bundle(
+    *,
+    g: GlobalOpts,
+    username: str,
+    password: str,
+    endpoint: str | None,
+    api_key: str | None,
+    api_key_ssm_name: str | None,
+) -> dict[str, Any]:
+    request_endpoint = _admin_credentials_endpoint(g=g, endpoint=endpoint)
+    request_api_key = _admin_api_key(g=g, api_key=api_key, api_key_ssm_name=api_key_ssm_name)
+    status, _hdrs, data = _http_post_json(
+        url=request_endpoint,
+        headers={
+            "authorization": _basic_auth_header(username, password),
+            "x-api-key": request_api_key,
+        },
+        body=b"",
+    )
+    body_text = data.decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        raise OpError(f"credentials request failed: status={status} body={body_text}")
+    return _load_json_object(raw=body_text, label="credentials response")
+
+
+def _bundle_target_global_opts(
+    *,
+    base: GlobalOpts,
+    bundle_doc: dict[str, Any],
+    session_root: str | None,
+    creds_cache: str | None,
+) -> GlobalOpts:
+    explicit_cache = str(creds_cache or "").strip()
+    explicit_root = str(session_root or "").strip()
+    if explicit_cache and explicit_root:
+        raise UsageError("provide only one of --session-root or --creds-cache")
+
+    target_cache = explicit_cache
+    if explicit_root:
+        meta = _session_metadata_from_doc(bundle_doc)
+        principal_sub = str(meta.get("principalSub") or "").strip()
+        if not principal_sub:
+            raise OpError("bundle missing session principalSub")
+        target_cache = str((Path(explicit_root).expanduser().resolve() / "sessions" / principal_sub / "session.json"))
+
+    bundle_agent_id = str((_session_metadata_from_doc(bundle_doc)).get("agentId") or "").strip()
+    return GlobalOpts(
+        stack=base.stack,
+        pretty=base.pretty,
+        quiet=base.quiet,
+        creds_cache_path=target_cache,
+        auto_refresh_creds=False,
+        agent_id=bundle_agent_id,
+    )
+
+
+def _write_bundle_artifacts(*, g: GlobalOpts, bundle_doc: dict[str, Any]) -> dict[str, Any]:
+    raw_text = json.dumps(bundle_doc, separators=(",", ":"), sort_keys=True)
+    path = _write_credentials_cache_from_text(g=g, raw_text=raw_text)
+    sts_env_paths = _write_sts_env_files_from_doc(g=g, root_doc=bundle_doc)
+    cognito_env_path = str(_write_cognito_env_file_from_doc(g=g, root_doc=bundle_doc))
+    manifest = _credentials_location_manifest(
+        g=g,
+        doc=bundle_doc,
+        sts_env_paths=sts_env_paths,
+        cognito_env_path=cognito_env_path,
+    )
+    return {"cachePath": str(path), "manifest": manifest}
+
+
+@bootstrap_admin_app.command("issue", help="Issue a seeded session bundle for an agent.")
+def agent_bootstrap_issue(
     ctx: typer.Context,
     username: str = typer.Option(..., "--username", help="Bootstrap username"),
     password: str = typer.Option(..., "--password", help="Bootstrap password"),
+    endpoint: str | None = typer.Option(
+        None,
+        "--endpoint",
+        help=f"Override credentials endpoint (otherwise stack output CredentialsInvokeUrl)",
+    ),
     api_key: str | None = typer.Option(
         None,
         "--api-key",
@@ -3964,27 +4062,76 @@ def agent_handoff_create(
         help="Optional output file path (written with 0600 permissions)",
     ),
 ) -> None:
-    _invoke(
-        ctx,
-        cmd_agent_handoff_create,
+    g = _ctx_global(ctx)
+    bundle_doc = _request_seeded_session_bundle(
+        g=g,
         username=username,
         password=password,
+        endpoint=endpoint,
         api_key=api_key,
         api_key_ssm_name=api_key_ssm_name,
-        out=out,
     )
+    if out:
+        _write_secure_text(path=Path(out).expanduser().resolve(), text=json.dumps(bundle_doc, indent=2) + "\n")
+    _print_json(bundle_doc, pretty=g.pretty)
 
 
-@handoff_admin_app.command("print-env", help="Render ENABLER_COGNITO_* + ENABLER_* export lines from handoff JSON.")
-def agent_handoff_print_env(
+@bootstrap_admin_app.command("place", help="Issue and place a seeded session bundle into the managed session store.")
+def agent_bootstrap_place(
     ctx: typer.Context,
-    file: str | None = typer.Option(
+    username: str = typer.Option(..., "--username", help="Bootstrap username"),
+    password: str = typer.Option(..., "--password", help="Bootstrap password"),
+    endpoint: str | None = typer.Option(
         None,
-        "--file",
-        help="Path to handoff JSON (otherwise read from stdin)",
+        "--endpoint",
+        help=f"Override credentials endpoint (otherwise stack output CredentialsInvokeUrl)",
+    ),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        help="Override API key value (otherwise fetched from SSM)",
+    ),
+    api_key_ssm_name: str | None = typer.Option(
+        None,
+        "--api-key-ssm-name",
+        help="Override SSM parameter name for API key lookup",
+    ),
+    session_root: str | None = typer.Option(
+        None,
+        "--session-root",
+        help="Place artifacts under this session root",
+    ),
+    creds_cache: str | None = typer.Option(
+        None,
+        "--creds-cache",
+        help="Place session.json at this explicit path",
     ),
 ) -> None:
-    _invoke_from_locals(ctx, cmd_agent_handoff_print_env, locals())
+    g = _ctx_global(ctx)
+    bundle_doc = _request_seeded_session_bundle(
+        g=g,
+        username=username,
+        password=password,
+        endpoint=endpoint,
+        api_key=api_key,
+        api_key_ssm_name=api_key_ssm_name,
+    )
+    target_g = _bundle_target_global_opts(
+        base=g,
+        bundle_doc=bundle_doc,
+        session_root=session_root,
+        creds_cache=creds_cache,
+    )
+    artifacts = _write_bundle_artifacts(g=target_g, bundle_doc=bundle_doc)
+    _print_json(
+        {
+            "kind": "enabler.admin.bootstrap.place.v1",
+            "principal": bundle_doc.get("principal"),
+            "session": bundle_doc.get("session"),
+            **artifacts,
+        },
+        pretty=g.pretty,
+    )
 
 
 @app.command("credentials", help="Request runtime credentials and print artifact locations (default).")

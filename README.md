@@ -29,24 +29,26 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-2. Provide bootstrap env vars:
+2. Bootstrap one of two ways:
 
 ```bash
+# direct bootstrap request
 export ENABLER_COGNITO_USERNAME='<username>'
 export ENABLER_COGNITO_PASSWORD='<password>'
 export ENABLER_API_KEY='<shared-api-key>'
 export ENABLER_CREDENTIALS_ENDPOINT='<credentials-endpoint-url>'
-# optional when starting MCP already bound:
-export ENABLER_AGENT_ID='<agent-id>'
-```
-
-3. Fetch/refresh runtime credentials and write artifacts:
-
-```bash
 ./enabler-creds summary
 ```
 
-4. For AWS CLI/SDK, use `credential_process`:
+```bash
+# or import/place a seeded session bundle issued by enabler-admin
+./enabler-admin agent bootstrap place --username <u> --password <p> --session-root ~/.local/state/enabler
+./enabler-creds session import --file bundle.json
+```
+
+`ENABLER_COGNITO_USERNAME` / `ENABLER_COGNITO_PASSWORD` are bootstrap-only. Normal runtime renewal uses the cached refresh token.
+
+3. For AWS CLI/SDK, use `credential_process`:
 
 ```bash
 ./enabler-creds credential-process --set agentEnablement
@@ -63,13 +65,13 @@ Ephemeral delegation flow (request -> approve -> redeem):
 ./enabler-creds delegation redeem --request-code '<requestCode>'
 ```
 
-5. For agents, launch MCP:
+4. For agents, launch MCP:
 
 ```bash
 ./enabler-mcp
 ```
 
-6. For local MCP tool execution without an external MCP client:
+5. For local MCP tool execution without an external MCP client:
 
 ```bash
 ./enabler-mcp-cli list
@@ -253,8 +255,8 @@ command = "/Users/jay/Projects/agent_enablement/enabler-mcp"
 ./enabler-admin agent onboard <username> <password> --profile-type named
 ./enabler-admin agent seed-profile --username <u> --password <p> --profile-type ephemeral
 ./enabler-admin agent decommission <username>
-./enabler-admin agent handoff create --username <u> --password <p> --out handoff.json
-./enabler-admin agent handoff print-env --file handoff.json
+./enabler-admin agent bootstrap issue --username <u> --password <p> --out bundle.json
+./enabler-admin agent bootstrap place --username <u> --password <p> --session-root ~/.local/state/enabler
 ```
 
 Ephemeral profiles (`profileType=ephemeral`) are hard-blocked from `agentAWSWorkshop*` credential sets.

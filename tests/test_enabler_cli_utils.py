@@ -365,12 +365,12 @@ def test_admin_cli_hard_break_rejects_taskboard_commands():
     assert "No such command 'taskboard'" in result.output
 
 
-def test_admin_agent_handoff_help_lists_commands():
+def test_admin_agent_bootstrap_help_lists_commands():
     runner = CliRunner()
-    result = runner.invoke(admin_app, ["agent", "handoff", "--help"])
+    result = runner.invoke(admin_app, ["agent", "bootstrap", "--help"])
     assert result.exit_code == 0
-    assert "create" in result.output
-    assert "print-env" in result.output
+    assert "issue" in result.output
+    assert "place" in result.output
 
 
 def test_help_banner_can_be_disabled():

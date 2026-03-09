@@ -11,13 +11,9 @@ from typing import Any
 
 from . import auth_inputs
 from .cli_shared import (
-    ENABLER_ADMIN_HANDOFF_KIND,
-    ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION,
     ENABLER_API_KEY,
     ENABLER_ADMIN_COGNITO_PASSWORD,
     ENABLER_ADMIN_COGNITO_USERNAME,
-    ENABLER_COGNITO_PASSWORD,
-    ENABLER_COGNITO_USERNAME,
     GlobalOpts,
     OpError,
     UsageError,
@@ -27,12 +23,10 @@ from .cli_shared import (
     _eprint,
     _inbox_queue_name,
     _jwt_payload,
-    _load_json_object,
     _parse_groups_csv,
     _print_json,
     _require_str,
     _stack_output_value,
-    _write_secure_json,
 )
 
 
@@ -775,85 +769,3 @@ def cmd_agent_onboard(args: argparse.Namespace, g: GlobalOpts) -> int:
     _print_json(result, pretty=g.pretty)
     return 0
 
-
-def _handoff_doc(*, username: str, password: str, api_key: str) -> dict[str, Any]:
-    return {
-        "kind": ENABLER_ADMIN_HANDOFF_KIND,
-        "schemaVersion": ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION,
-        "username": username,
-        "password": password,
-        "apiKey": api_key,
-    }
-
-
-def _validate_handoff_doc(doc: dict[str, Any]) -> dict[str, str]:
-    kind = str(doc.get("kind") or "").strip()
-    if kind != ENABLER_ADMIN_HANDOFF_KIND:
-        raise UsageError(f"invalid handoff kind: expected {ENABLER_ADMIN_HANDOFF_KIND!r}, got {kind!r}")
-    schema = str(doc.get("schemaVersion") or "").strip()
-    if schema != ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION:
-        raise UsageError(
-            f"invalid handoff schemaVersion: expected {ENABLER_ADMIN_HANDOFF_SCHEMA_VERSION!r}, got {schema!r}"
-        )
-    required = {
-        "username": str(doc.get("username") or "").strip(),
-        "password": str(doc.get("password") or "").strip(),
-        "apiKey": str(doc.get("apiKey") or "").strip(),
-    }
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        raise UsageError(f"handoff JSON missing required fields: {', '.join(missing)}")
-    return required
-
-
-def _shell_quote(val: str) -> str:
-    return "'" + str(val).replace("'", "'\"'\"'") + "'"
-
-
-def _render_handoff_exports(validated: dict[str, str]) -> str:
-    mapping = {
-        ENABLER_COGNITO_USERNAME: validated["username"],
-        ENABLER_COGNITO_PASSWORD: validated["password"],
-        ENABLER_API_KEY: validated["apiKey"],
-    }
-    lines = [f"export {name}={_shell_quote(value)}" for name, value in mapping.items()]
-    return "\n".join(lines) + "\n"
-
-
-def _read_handoff_doc(*, handoff_file: str | None) -> dict[str, Any]:
-    if handoff_file:
-        raw = Path(handoff_file).read_text(encoding="utf-8")
-        return _load_json_object(raw=raw, label=f"handoff JSON at {handoff_file}")
-    if sys.stdin.isatty():
-        raise UsageError("provide --file or pipe handoff JSON on stdin")
-    raw = sys.stdin.read()
-    return _load_json_object(raw=raw, label="handoff JSON from stdin")
-
-
-def cmd_agent_handoff_create(args: argparse.Namespace, g: GlobalOpts) -> int:
-    ctx = build_admin_context(g)
-    username = _require_str(args.username, "username", hint="--username")
-    password = _require_str(args.password, "password", hint="--password")
-    api_key = str(args.api_key or "").strip()
-    if not api_key:
-        param_name = ctx.resolve_api_key_param_name(args.api_key_ssm_name)
-        api_key = _ssm_get_value(ctx.session, name=param_name)
-    if not api_key:
-        raise OpError("failed to resolve API key")
-
-    doc = _handoff_doc(username=username, password=password, api_key=api_key)
-    _ = _validate_handoff_doc(doc)
-    if args.out:
-        out_path = Path(args.out).expanduser().resolve()
-        _write_secure_json(path=out_path, obj=doc)
-    _print_json(doc, pretty=g.pretty)
-    return 0
-
-
-def cmd_agent_handoff_print_env(args: argparse.Namespace, g: GlobalOpts) -> int:
-    del g
-    doc = _read_handoff_doc(handoff_file=args.file)
-    validated = _validate_handoff_doc(doc)
-    _eprint("warning: emitting plaintext secrets to stdout; treat this output as sensitive")
-    sys.stdout.write(_render_handoff_exports(validated))
-    return 0

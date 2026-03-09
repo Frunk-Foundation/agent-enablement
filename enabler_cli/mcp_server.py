@@ -668,7 +668,7 @@ class EnablerMcp:
             ("credentials.exec", "ensure"): {"set": "agentEnablement", "requireIdToken": False, "forceRefresh": False},
             ("credentials.exec", "set_agentid"): {"agentId": "jay"},
             ("credentials.exec", "list_sessions"): {},
-            ("credentials.exec", "delegation_request"): {"ttlSeconds": 600, "scopes": ["taskboard", "eventbus"], "purpose": "ephemeral handoff"},
+            ("credentials.exec", "delegation_request"): {"ttlSeconds": 600, "scopes": ["taskboard", "eventbus"], "purpose": "ephemeral bootstrap"},
             ("credentials.exec", "delegation_approve"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_status"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw"},
             ("credentials.exec", "delegation_redeem"): {"requestCode": "9tZ52BZVAYArG9afvgwCAw", "switchToTarget": True},

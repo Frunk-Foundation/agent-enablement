@@ -106,11 +106,11 @@ def test_credentials_handler_uses_explicit_scope_role_env_vars(monkeypatch):
     assert "ASSUME_ROLE_ARN" not in env_vars
 
 
-def test_user_pool_client_refresh_token_validity_is_one_day(monkeypatch):
+def test_user_pool_client_refresh_token_validity_is_365_days(monkeypatch):
     template = _synth_template(monkeypatch)
     client = _find_resource(template, "AWS::Cognito::UserPoolClient", "AgentUserPoolClient")
     props = client.get("Properties") or {}
-    assert props.get("RefreshTokenValidity") == 1440
+    assert props.get("RefreshTokenValidity") == 525600
     units = props.get("TokenValidityUnits") or {}
     assert units.get("RefreshToken") == "minutes"
 

@@ -254,7 +254,7 @@ class AgentEnablementStack(Stack):
             "AgentUserPoolClient",
             auth_flows=cognito.AuthFlow(user_password=True, user_srp=True),
             generate_secret=False,
-            refresh_token_validity=Duration.days(1),
+            refresh_token_validity=Duration.days(365),
         )
         # Canonical prefix: agent-enablement/latest/...
         enablement_base_url = (

@@ -109,7 +109,7 @@ def app_callback(
         quiet=quiet,
     )
     g = _apply_global_env(ns)
-    if not g.agent_id:
+    if not g.agent_id and ctx.invoked_subcommand != "session":
         raise UsageError(f"missing agent id (pass --agent-id or set {ENABLER_AGENT_ID})")
     ctx.obj = {"g": g}
 
@@ -460,6 +460,30 @@ def session_list(ctx: typer.Context) -> None:
     g = _ctx_global(ctx)
     sessions = _list_local_sessions()
     _print_json({"kind": "enabler.session.list.v1", "sessions": sessions}, pretty=g.pretty)
+
+
+def _read_bundle_doc(*, file: str | None) -> dict[str, object]:
+    if file:
+        raw = Path(file).read_text(encoding="utf-8")
+        return _load_json_object(raw=raw, label=f"credentials bundle at {file}")
+    if sys.stdin.isatty():
+        raise UsageError("provide --file or pipe bundle JSON on stdin")
+    return _load_json_object(raw=sys.stdin.read(), label="credentials bundle from stdin")
+
+
+@session_app.command("import", help="Import a seeded session bundle into the managed session store.")
+def session_import(
+    ctx: typer.Context,
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        help="Path to broker-style credentials/session JSON (otherwise read from stdin)",
+    ),
+) -> None:
+    g = _ctx_global(ctx)
+    bundle_doc = _read_bundle_doc(file=file)
+    artifacts = _write_exchange_artifacts(g=g, response_obj=bundle_doc)
+    _print_json({"kind": "enabler.session.import.v1", **artifacts}, pretty=g.pretty)
 
 
 @session_app.command("revoke", help="Remove local session artifacts for an agent id.")

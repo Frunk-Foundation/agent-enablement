@@ -66,7 +66,8 @@ just test
 - MCP runtime switching (`credentials.exec` + `action=set_agentid`) changes only the default context for future calls; async jobs must pin enqueue-time `agentId` to avoid identity drift.
 - MCP has a built-in discovery path now: call top-level `help` or any `*.exec` with `action=help`; in unbound mode, help still works so bootstrap guidance is always available.
 - After credentials schema changes deploy, run `credentials.exec` with `action=ensure` and `args.forceRefresh=true` to pull new fields immediately instead of waiting for expiry-driven refresh.
-- Runtime credential renewal is refresh-token-only. Username/password remain bootstrap inputs; auto-refresh no longer falls back to ambient basic auth.
+- Runtime credential renewal is refresh-token-only. Username/password are for bootstrap issuance only; admin-issued seeded bundles and delegation redeem should converge on the same session artifact.
+- `trunk check` is not usable until the repo has been initialized with `trunk init`; otherwise it exits immediately with that setup error instead of linting changed files.
 - Runtime SSM access is available via `ssm.exec` (`paths|list|get`); returned values are plaintext secret material and must not be echoed into logs or transcripts.
 - Agent mail now goes through `jmap-mail.exec`; the old EventBridge/SQS inbox flow is rebranded as `eventbus.exec` and is not the mail interface.
 - JMAP mail attachments are fileshare-backed in v1: `emailsubmission_set` can reference pre-uploaded attachment objects or upload `attachmentFilePaths` directly and persist the resulting attachment metadata on the mail item.
